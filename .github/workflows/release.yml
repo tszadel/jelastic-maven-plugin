@@ -24,6 +24,17 @@ jobs:
           server-username: MAVEN_USERNAME
           server-password: MAVEN_TOKEN
 
+      # A package version is immutable once published, so a tag that does not match the pom would publish one version
+      # and announce another. Fail before anything is deployed.
+      - name: Check that the tag matches the project version
+        run: |
+          version=$(mvn -B -q -DforceStdout help:evaluate -Dexpression=project.version)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the project version $version. Set the version in the pom, or tag v$version." >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
       - name: Publish to GitHub Packages
         run: mvn -B --no-transfer-progress deploy
         env:
@@ -31,6 +42,6 @@ jobs:
           MAVEN_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create the GitHub release
-        run: gh release create "$GITHUB_REF_NAME" --generate-notes target/*.jar
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes "target/jelastic-maven-plugin-$VERSION.jar"
         env:
           GH_TOKEN: ${{ github.token }}
