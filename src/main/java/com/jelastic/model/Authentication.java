@@ -1,6 +1,7 @@
 package com.jelastic.model;
 
-import org.codehaus.jackson.annotate.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 
 /**
  * User: Igor.Yova@gmail.com
@@ -15,6 +16,7 @@ public class Authentication {
     private String email;
     private String name;
     private Debug debug;
+    @JsonDeserialize(using = ErrorMessageDeserializer.class)
     private String error;
 
 

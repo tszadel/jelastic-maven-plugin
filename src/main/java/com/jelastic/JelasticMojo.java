@@ -1,450 +1,833 @@
 package com.jelastic;
 
-/**
- * User: Igor.Yova@gmail.com
- * Date: 6/8/11
- * Time: 10:30 AM
- * <p>
- * http://app.hivext.com/1.0/users/authentication/rest/signin
- * http://api.hivext.com/1.0/storage/uploader/rest/upload
- * http://app.hivext.com/1.0/data/base/rest/createobject
- * http://live.jelastic.com/deploy/DeployArchive
- */
-
-import com.jelastic.model.*;
-import org.apache.http.HttpHost;
-import org.apache.http.NameValuePair;
-import org.apache.http.auth.AuthScope;
-import org.apache.http.auth.UsernamePasswordCredentials;
-import org.apache.http.client.ClientProtocolException;
-import org.apache.http.client.CookieStore;
-import org.apache.http.client.ResponseHandler;
-import org.apache.http.client.entity.UrlEncodedFormEntity;
-import org.apache.http.client.methods.HttpGet;
-import org.apache.http.client.methods.HttpPost;
-import org.apache.http.client.params.ClientPNames;
-import org.apache.http.client.params.CookiePolicy;
-import org.apache.http.client.utils.URIUtils;
-import org.apache.http.client.utils.URLEncodedUtils;
-import org.apache.http.conn.ClientConnectionManager;
-import org.apache.http.conn.params.ConnRoutePNames;
-import org.apache.http.conn.scheme.Scheme;
-import org.apache.http.conn.scheme.SchemeRegistry;
-import org.apache.http.conn.ssl.SSLSocketFactory;
-import org.apache.http.cookie.Cookie;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jelastic.client.JelasticClient;
+import com.jelastic.client.ProgressHttpEntity;
+import com.jelastic.model.Archive;
+import com.jelastic.model.Archives;
+import com.jelastic.model.Authentication;
+import com.jelastic.model.CreateObject;
+import com.jelastic.model.Deploy;
+import com.jelastic.model.LogOut;
+import com.jelastic.model.UpLoader;
+import org.apache.http.HttpEntity;
+import org.apache.http.entity.ContentType;
 import org.apache.http.entity.mime.HttpMultipartMode;
-import org.apache.http.entity.mime.content.FileBody;
-import org.apache.http.entity.mime.content.StringBody;
-import org.apache.http.impl.client.BasicResponseHandler;
-import org.apache.http.impl.client.DefaultHttpClient;
-import org.apache.http.message.AbstractHttpMessage;
-import org.apache.http.message.BasicNameValuePair;
-import org.apache.maven.artifact.resolver.ArtifactResolver;
+import org.apache.http.entity.mime.MultipartEntityBuilder;
 import org.apache.maven.execution.MavenSession;
-import org.apache.maven.model.Plugin;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
+import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.project.MavenProject;
 import org.apache.maven.settings.Proxy;
-import org.codehaus.jackson.map.ObjectMapper;
-import org.codehaus.plexus.util.StringUtils;
-import org.codehaus.plexus.util.xml.Xpp3Dom;
 
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
-import java.io.*;
-import java.net.*;
-import java.security.cert.CertificateException;
-import java.security.cert.X509Certificate;
-import java.util.*;
+import java.io.File;
+import java.io.FileFilter;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.Reader;
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
 
 /**
- * @threadSafe
+ * Common behaviour of the Jelastic goals: reading the configuration, uploading the artifact and talking to the
+ * platform API.
+ *
+ * <p>Works against any Jelastic based cloud: Jelastic itself, Infomaniak Public Cloud, Scaleway, ... The API host is
+ * given by the {@code api_hoster} parameter or the {@code jelastic-hoster} system property.</p>
  */
 public abstract class JelasticMojo extends AbstractMojo {
-    private final static String WAR_TYPE = "war";
-    private final static String EAR_TYPE = "ear";
-    private final static String JAR_TYPE = "jar";
 
-    private final static String HTTP_PROTOCOL = "http";
-    private final static String HTTPS_PROTOCOL = "https";
+    private static final String WAR_TYPE = "war";
+    private static final String EAR_TYPE = "ear";
+    private static final String JAR_TYPE = "jar";
 
-    private final static String SCHEMA = HTTPS_PROTOCOL;
-    private int port = -1;
-    private final static String VERSION = "1.0";
-    private long totalSize;
-    private int numSt;
-    private CookieStore cookieStore = null;
-    private final static String URL_AUTHENTICATION = "/" + VERSION + "/users/authentication/rest/signin";
-    private final static String URL_UPLOADER = "/" + VERSION + "/storage/uploader/rest/upload";
-    private final static String URL_CREATE_OBJECT = "/deploy/createobject";
-    private final static String URL_DEPLOY = "/deploy/DeployArchive";
-    private final static String URL_LOG_OUT = "/users/authentication/rest/signout";
-    private final static String URL_GET_ARCHIVES = "/GetArchives";
-    private final static String URL_DELETE_ARCHIVE = "/DeleteArchive";
-    private final static int SAME_FILES_LIMIT = 5;
-    private final static String COMMENT_PREFIX = "Uploaded by Maven plugin";
-    private static ObjectMapper mapper = new ObjectMapper();
-    private static Properties properties = new Properties();
+    private static final String HTTP_PROTOCOL = "http";
+    private static final String HTTPS_PROTOCOL = "https";
+
+    private static final String SCHEMA = HTTPS_PROTOCOL;
+    private static final int DEFAULT_PORT = -1;
+    private static final String VERSION = "1.0";
+
+    private static final String URL_AUTHENTICATION = "/" + VERSION + "/users/authentication/rest/signin";
+    private static final String URL_UPLOADER = "/" + VERSION + "/storage/uploader/rest/upload";
+    private static final String URL_LOG_OUT = "/" + VERSION + "/users/authentication/rest/signout";
+    private static final String URL_CREATE_OBJECT = "/deploy/createobject";
+    private static final String URL_DEPLOY = "/deploy/DeployArchive";
+    private static final String URL_GET_ARCHIVES = "/GetArchives";
+    private static final String URL_DELETE_ARCHIVE = "/DeleteArchive";
+
+    private static final int SAME_FILES_LIMIT = 5;
+    private static final String COMMENT_PREFIX = "Uploaded by Maven plugin";
+    private static final int PROGRESS_STEP = 10;
 
     //Properties
-    private final static String JELASTIC_PREDEPLOY_HOOK_PROPERTY = "jelastic-predeploy-hook";
-    private final static String JELASTIC_POSTDEPLOY_HOOK_PROPERTY = "jelastic-postdeploy-hook";
-    private final static String NODE_GROUP_PROPERTY = "nodegroup";
-    private final static String ENVIRONMENT_PROPERTY = "environment";
-    private final static String CONTEXT_PROPERTY = "context";
-    private final static String JELASTIC_EMAIL_PROPERTY = "jelastic-email";
-    private final static String JELASTIC_PASSWORD_PROPERTY = "jelastic-password";
-    private final static String JELASTIC_HOSTER_PROPERTY = "jelastic-hoster";
-    private final static String JELASTIC_ACTION_KEY = "action-key";
-    private final static String JELASTIC_DEPLOYMENT_ARTIFACT_NAME = "jelastic.deployment.artifactName";
-    private final static String JELASTIC_ARTIFACT_NAME = "jelastic-artifact";
-    private final static String JELASTIC_COMMENT_PROPERTY = "jelastic-comment";
-    private final static String JELASTIC_HEADERS_PROPERTY = "jelastic-headers";
-    private final static String JELASTIC_SESSION_PROPERTY = "jelastic-session";
-    private final static String JELASTIC_TOKEN_PROPERTY = "jelastic-apitoken";
+    private static final String JELASTIC_PREDEPLOY_HOOK_PROPERTY = "jelastic-predeploy-hook";
+    private static final String JELASTIC_POSTDEPLOY_HOOK_PROPERTY = "jelastic-postdeploy-hook";
+    private static final String NODE_GROUP_PROPERTY = "nodegroup";
+    private static final String ENVIRONMENT_PROPERTY = "environment";
+    private static final String CONTEXT_PROPERTY = "context";
+    private static final String JELASTIC_EMAIL_PROPERTY = "jelastic-email";
+    private static final String JELASTIC_PASSWORD_PROPERTY = "jelastic-password";
+    private static final String JELASTIC_HOSTER_PROPERTY = "jelastic-hoster";
+    private static final String JELASTIC_ACTION_KEY = "action-key";
+    private static final String JELASTIC_ARTIFACT_NAME = "jelastic-artifact";
+    private static final String JELASTIC_COMMENT_PROPERTY = "jelastic-comment";
+    private static final String JELASTIC_HEADERS_PROPERTY = "jelastic-headers";
+    private static final String JELASTIC_SESSION_PROPERTY = "jelastic-session";
+    private static final String JELASTIC_TOKEN_PROPERTY = "jelastic-apitoken";
+    private static final String JELASTIC_PROPERTIES_FILE = "jelastic-properties";
+    private static final String JELASTIC_UPLOAD_ONLY_PROPERTY = "jelastic-upload-only";
 
     //Env. vars
-    private final static String MAVEN_DEPLOY_ARTIFACT_ENV = "MAVEN_DEPLOY_ARTIFACT";
+    private static final String MAVEN_DEPLOY_ARTIFACT_ENV = "MAVEN_DEPLOY_ARTIFACT";
 
-    /**
-     * Used to look up Artifacts in the remote repository.
-     *
-     * @parameter expression= "${component.org.apache.maven.artifact.resolver.ArtifactResolver}"
-     * @required
-     * @readonly
-     */
-    protected ArtifactResolver artifactResolver;
-
-    /**
-     * The package output file.
-     *
-     * @parameter default-value = "${project.build.directory}/${project.build.finalName}.${project.packaging}"
-     * @required
-     * @readonly
-     */
+    private Properties externalProperties;
     private File artifactFile;
+    private long totalSize;
+    private boolean ownsSession;
+    private int lastReportedProgress = -PROGRESS_STEP;
 
     /**
-     * The packaging of the Maven project that this goal operates upon.
-     *
-     * @parameter expression = "${project.packaging}"
-     * @required
-     * @readonly
+     * The Maven project.
      */
-    private String packaging;
-
-    /**
-     * The maven project.
-     *
-     * @parameter expression="${project}"
-     * @required
-     * @readonly
-     */
-
+    @Parameter(defaultValue = "${project}", readonly = true, required = true)
     private MavenProject project;
 
     /**
-     * The Maven session.
-     *
-     * @parameter expression="${session}"
-     * @readonly
-     * @required
+     * The Maven session, used to read the proxy configuration of {@code settings.xml}.
      */
+    @Parameter(defaultValue = "${session}", readonly = true, required = true)
     private MavenSession mavenSession;
 
     /**
-     * Headers Properties.
-     *
-     * @parameter
+     * The packaging of the Maven project that this goal operates upon.
      */
-    private Map<String, String> headers;
+    @Parameter(defaultValue = "${project.packaging}", readonly = true, required = true)
+    private String packaging;
 
     /**
-     * Email Properties.
-     *
-     * @parameter
+     * Directory scanned to find the artifact to upload.
      */
-    private String email;
-
-    /**
-     * Comment Properties.
-     *
-     * @parameter
-     */
-    private String comment;
-
-
-    /**
-     * Password Properties.
-     *
-     * @parameter
-     */
-    private String password;
-
-    /**
-     * Context Properties.
-     *
-     * @parameter default-value="ROOT"
-     */
-    private String context;
-
-
-    /**
-     * Context Properties.
-     *
-     * @parameter default-value="api.jelastic.com"
-     */
-    private String api_hoster;
-
-
-    /**
-     * Environment name Properties.
-     *
-     * @parameter
-     */
-    private String environment;
-
-    /**
-     * Node group name Properties.
-     *
-     * @parameter
-     */
-    private String nodeGroup;
-
-    /**
-     * Api token Properties.
-     *
-     * @parameter
-     */
-    private String apiToken;
-
-    /**
-     * Artifact for deploy.
-     *
-     * @parameter
-     */
-    private String artifact;
-
-    /**
-     * Location of the file.
-     *
-     * @parameter expression="${project.build.directory}" default-value="${project.build.directory}"
-     * @required
-     */
+    @Parameter(defaultValue = "${project.build.directory}", property = "jelastic.outputDirectory", required = true)
     private File outputDirectory;
 
     /**
-     * Deployment parameters.
-     *
-     * @parameter
+     * Extra HTTP headers sent with every API call.
      */
+    @Parameter
+    private Map<String, String> headers;
+
+    /**
+     * Account used to sign in, when no API token is provided.
+     */
+    @Parameter(property = "jelastic.email")
+    private String email;
+
+    /**
+     * Password used to sign in, when no API token is provided.
+     */
+    @Parameter(property = "jelastic.password")
+    private String password;
+
+    /**
+     * API token, to be preferred over the email/password pair.
+     */
+    @Parameter(property = "jelastic.apiToken")
+    private String apiToken;
+
+    /**
+     * Comment attached to the uploaded archive. Defaults to the description of the project.
+     */
+    @Parameter(property = "jelastic.comment")
+    private String comment;
+
+    /**
+     * Context the artifact is deployed to.
+     */
+    @Parameter(defaultValue = "ROOT", property = "jelastic.context")
+    private String context;
+
+    /**
+     * Host name of the API of the hoster, for instance {@code api.jelastic.com} or
+     * {@code api.pub1.infomaniak.cloud}.
+     */
+    @Parameter(defaultValue = "api.jelastic.com", property = "jelastic.hoster")
+    private String api_hoster;
+
+    /**
+     * Name of the target environment.
+     */
+    @Parameter(property = "jelastic.environment")
+    private String environment;
+
+    /**
+     * Name of the target node group, for instance {@code cp}.
+     */
+    @Parameter(property = "jelastic.nodeGroup")
+    private String nodeGroup;
+
+    /**
+     * Name of the artifact to upload, when the output directory holds several of them.
+     */
+    @Parameter(property = "jelastic.artifact")
+    private String artifact;
+
+    /**
+     * Additional parameters sent to the deploy call.
+     */
+    @Parameter
     private Map<String, String> deployParams;
 
-    boolean isWar() {
-        if (WAR_TYPE.equals(packaging)) {
-            return true;
-        } else if (EAR_TYPE.equals(packaging)) {
-            return true;
-        } else if (JAR_TYPE.equals(packaging)) {
-            return true;
+    /**
+     * Uploads and registers the archive without deploying it.
+     */
+    @Parameter(defaultValue = "false", property = "jelastic.uploadOnly")
+    private boolean uploadOnly;
+
+    /**
+     * Skips the execution of the goal.
+     */
+    @Parameter(defaultValue = "false", property = "jelastic.skip")
+    private boolean skip;
+
+    /**
+     * Accepts any TLS certificate. Only useful for a private platform using a self signed certificate; leaving it to
+     * {@code false} is what protects the credentials sent to the API.
+     */
+    @Parameter(defaultValue = "false", property = "jelastic.trustAllCertificates")
+    private boolean trustAllCertificates;
+
+    /**
+     * Connection timeout, in seconds.
+     */
+    @Parameter(defaultValue = "30", property = "jelastic.connectTimeoutSeconds")
+    private int connectTimeoutSeconds;
+
+    /**
+     * Read timeout, in seconds. It applies between two blocks of data, not to the whole upload.
+     */
+    @Parameter(defaultValue = "300", property = "jelastic.socketTimeoutSeconds")
+    private int socketTimeoutSeconds;
+
+    /**
+     * Runs the goal.
+     *
+     * @param deployArtifact {@code true} to deploy the archive once it is uploaded and registered.
+     */
+    protected void run(boolean deployArtifact) throws MojoExecutionException {
+        if (skip) {
+            getLog().info("Skipping Jelastic goal (jelastic.skip is set)");
+            return;
         }
 
-        return false;
+        if (!isSupportedPackaging()) {
+            getLog().info("Skipping Jelastic goal: packaging [" + packaging + "] is neither WAR, EAR nor JAR");
+            return;
+        }
+
+        JelasticClient client = createClient();
+        Authentication authentication = null;
+        try {
+            authentication = authentication(client);
+            getLog().info("------------------------------------------------------------------------");
+            getLog().info("   Authentication : SUCCESS");
+            getLog().info("------------------------------------------------------------------------");
+
+            UpLoader upLoader = upload(client, authentication);
+            getLog().info("      File UpLoad : SUCCESS");
+            getLog().info("         File URL : " + upLoader.getFile());
+            getLog().info("        File size : " + upLoader.getSize());
+            getLog().info("------------------------------------------------------------------------");
+
+            CreateObject createObject = createObject(client, upLoader, authentication);
+            getLog().info("File registration : SUCCESS");
+            getLog().info("  Registration ID : " + createObject.getResponse().getObject().getId());
+            getLog().info("     Developer ID : " + createObject.getResponse().getObject().getDeveloper());
+            getLog().info("------------------------------------------------------------------------");
+
+            deleteObsoleteArchives(client, authentication);
+
+            if (deployArtifact && !isUploadOnly()) {
+                Deploy deploy = deploy(client, authentication, upLoader);
+                getLog().info("      Deploy file : SUCCESS");
+                getLog().info("       Deploy log :");
+                getLog().info(getDeployOutput(deploy));
+            }
+        } finally {
+            if (ownsSession && authentication != null) {
+                logOut(client, authentication);
+            }
+            client.close();
+        }
+    }
+
+    boolean isSupportedPackaging() {
+        return WAR_TYPE.equals(packaging) || EAR_TYPE.equals(packaging) || JAR_TYPE.equals(packaging);
     }
 
     public File getOutputDirectory() {
         return outputDirectory;
     }
 
-    private String getShema() {
-        return SCHEMA;
+    private JelasticClient createClient() {
+        JelasticClient client = new JelasticClient(SCHEMA, getApiJelastic(), DEFAULT_PORT, getMavenProxy(),
+                trustAllCertificates, connectTimeoutSeconds, socketTimeoutSeconds, getLog());
+        client.addHeaders(getHeaders());
+
+        return client;
     }
 
     private String getApiJelastic() {
-        if (System.getProperty(JELASTIC_HOSTER_PROPERTY) != null && System.getProperty(JELASTIC_HOSTER_PROPERTY).length() > 0) {
-            api_hoster = System.getProperty(JELASTIC_HOSTER_PROPERTY);
+        String hoster = System.getProperty(JELASTIC_HOSTER_PROPERTY);
+        if (isNotEmpty(hoster)) {
+            api_hoster = hoster;
         }
 
         return api_hoster;
     }
 
-    private int getPort() {
-        return port;
+    private Map<String, String> getHeaders() {
+        String jelasticHeaders = System.getProperty(JELASTIC_HEADERS_PROPERTY);
+        getLog().debug(JELASTIC_HEADERS_PROPERTY + "=" + jelasticHeaders);
+
+        if (isNotEmpty(jelasticHeaders)) {
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, String> decoded = new ObjectMapper()
+                        .readValue(URLDecoder.decode(jelasticHeaders, "UTF-8"), Map.class);
+                if (headers == null) {
+                    headers = decoded;
+                } else {
+                    headers.putAll(decoded);
+                }
+                getLog().debug("headers=" + headers);
+            } catch (IOException e) {
+                getLog().warn("Unable to read [" + JELASTIC_HEADERS_PROPERTY + "]: " + e.getMessage());
+            }
+        }
+
+        return headers;
     }
 
-    private CookieStore getCookieStore() {
-        return cookieStore;
+    Authentication authentication(JelasticClient client) throws MojoExecutionException {
+        String session = getSessionFromProperties();
+        if (session != null) {
+            getLog().debug("auth by " + JELASTIC_SESSION_PROPERTY);
+            return sessionOnly(session);
+        }
+
+        String token = getApiToken();
+        if (isNotEmpty(token)) {
+            getLog().debug("auth by apitoken");
+            return sessionOnly(token);
+        }
+
+        getLog().debug("auth by email/password");
+        String login = getEmail();
+        if (!isNotEmpty(login) || !isNotEmpty(getPassword())) {
+            throw new MojoExecutionException("No credentials found: set <apiToken>, or <email> and <password>, "
+                    + "in the plugin configuration (or through the jelastic-apitoken, jelastic-email and "
+                    + "jelastic-password system properties).");
+        }
+
+        Map<String, String> params = new LinkedHashMap<String, String>();
+        params.put("login", login);
+        params.put("password", getPassword());
+
+        Authentication authentication = call(client, "Authentication", URL_AUTHENTICATION, params,
+                Authentication.class);
+        checkResult("Authentication", authentication.getResult(), authentication.getError());
+        ownsSession = true;
+
+        if (!isNotEmpty(authentication.getSession())) {
+            throw new MojoExecutionException("Authentication succeeded but no session was returned by "
+                    + getApiJelastic() + ".");
+        }
+
+        return authentication;
     }
 
-    private String getUrlAuthentication() {
-        return URL_AUTHENTICATION;
+    private Authentication sessionOnly(String session) {
+        Authentication authentication = new Authentication();
+        authentication.setSession(session);
+        authentication.setResult(0);
+
+        return authentication;
     }
 
-    private String getUrlUploader() {
-        return URL_UPLOADER;
+    public UpLoader upload(JelasticClient client, Authentication authentication) throws MojoExecutionException {
+        artifactFile = selectArtifact();
+
+        getLog().info("File Uploading Progress :");
+        lastReportedProgress = -PROGRESS_STEP;
+
+        ContentType textType = ContentType.create("text/plain", StandardCharsets.UTF_8);
+        HttpEntity multipart = MultipartEntityBuilder.create()
+                .setMode(HttpMultipartMode.BROWSER_COMPATIBLE)
+                .setCharset(StandardCharsets.UTF_8)
+                .addTextBody("fid", "123456", textType)
+                .addTextBody("session", authentication.getSession(), textType)
+                .addBinaryBody("file", artifactFile, ContentType.APPLICATION_OCTET_STREAM, artifactFile.getName())
+                .build();
+
+        totalSize = multipart.getContentLength();
+
+        HttpEntity entity = new ProgressHttpEntity(multipart, new ProgressHttpEntity.ProgressListener() {
+            public void transferred(long transferred) {
+                reportProgress(transferred);
+            }
+        });
+
+        UpLoader upLoader;
+        try {
+            upLoader = client.post(URL_UPLOADER, entity, UpLoader.class);
+        } catch (IOException e) {
+            throw new MojoExecutionException("File upload failed: " + e.getMessage(), e);
+        }
+
+        checkResult("File upload", upLoader.getResult(), upLoader.getError());
+
+        if (isNotEmpty(upLoader.getFile())) {
+            String fileUrl = upLoader.getFile().replaceFirst(HTTP_PROTOCOL, HTTPS_PROTOCOL);
+            if (isAvailableByHttps(fileUrl)) {
+                upLoader.setFile(fileUrl);
+            }
+        }
+
+        return upLoader;
     }
 
-    private String getUrlCreateObject() {
-        return URL_CREATE_OBJECT;
+    private void reportProgress(long transferred) {
+        if (totalSize <= 0) {
+            return;
+        }
+
+        int percent = (int) ((transferred / (float) totalSize) * 100);
+        if (percent - lastReportedProgress >= PROGRESS_STEP || (percent >= 100 && lastReportedProgress < 100)) {
+            getLog().info("[" + percent + "%]");
+            lastReportedProgress = percent;
+        }
     }
 
-    private String getUrlDeploy() {
-        return URL_DEPLOY;
+    private File selectArtifact() throws MojoExecutionException {
+        File[] files = outputDirectory.listFiles(new FileFilter() {
+            public boolean accept(File pathname) {
+                return pathname.isFile()
+                        && pathname.getName().matches(".*\\.(" + WAR_TYPE + "|" + EAR_TYPE + "|" + JAR_TYPE + ")$");
+            }
+        });
+
+        if (files == null || files.length == 0) {
+            throw new MojoExecutionException("No artifact found in [" + outputDirectory
+                    + "]: build the project before deploying it.");
+        }
+
+        //The biggest is the first
+        List<File> fileList = new ArrayList<File>(Arrays.asList(files));
+        Collections.sort(fileList, new Comparator<File>() {
+            public int compare(File left, File right) {
+                return Long.valueOf(right.length()).compareTo(left.length());
+            }
+        });
+
+        File selected = null;
+        String customArtifactName = getCustomArtifactName();
+        if (isNotEmpty(customArtifactName)) {
+            File custom = new File(outputDirectory, customArtifactName);
+            getLog().debug("Custom artifact path: " + custom);
+            if (custom.exists()) {
+                selected = custom;
+            } else {
+                getLog().warn("Artifact [" + customArtifactName + "] not found in [" + outputDirectory
+                        + "], falling back on the biggest artifact of the directory.");
+            }
+        }
+
+        if (selected == null) {
+            selected = fileList.get(0);
+        }
+
+        getLog().debug("Found artifacts:");
+        for (File file : fileList) {
+            getLog().debug("\t" + (selected.getName().equals(file.getName()) ? "(*) " : "  * ")
+                    + file.getName() + " - " + file.length());
+        }
+
+        getLog().info("Selected artifact: " + selected.getAbsolutePath());
+
+        return selected;
     }
 
-    private String getUrlLogOut() {
-        return URL_LOG_OUT;
+    public CreateObject createObject(JelasticClient client, UpLoader upLoader, Authentication authentication)
+            throws MojoExecutionException {
+        Map<String, Object> data = archiveData(artifactFile.getName(), upLoader.getFile(), upLoader.getSize(),
+                getArtifactComment());
+
+        Map<String, String> params = new LinkedHashMap<String, String>();
+        params.put("charset", "UTF-8");
+        params.put("session", authentication.getSession());
+        params.put("type", "JDeploy");
+        params.put("data", toJson(client, data));
+
+        CreateObject createObject = call(client, "Create object", URL_CREATE_OBJECT, params, CreateObject.class);
+        checkResult("Create object", createObject.getResult(), createObject.getError());
+
+        CreateObject.JelasticResponse response = createObject.getResponse();
+        if (response == null) {
+            throw new MojoExecutionException("Create object failed: the platform returned no response body.");
+        }
+
+        checkResult("Create object", response.getResult(), response.getError());
+
+        if (response.getObject() == null) {
+            throw new MojoExecutionException("Create object failed: the platform registered no object.");
+        }
+
+        return createObject;
     }
 
-    private String getEmail() {
-        return getProperty(JELASTIC_EMAIL_PROPERTY, email);
+    /**
+     * Describes the uploaded archive.
+     *
+     * <p>Serialized with Jackson rather than concatenated by hand: a description holding a quote, a backslash or a
+     * non ASCII character used to produce an invalid JSON payload, which the platform rejected with an error that had
+     * nothing to do with the real cause.</p>
+     */
+    static Map<String, Object> archiveData(String name, String archive, long size, String comment) {
+        Map<String, Object> data = new LinkedHashMap<String, Object>();
+        data.put("name", name);
+        data.put("archive", archive);
+        data.put("link", 0);
+        data.put("size", size);
+        data.put("comment", comment);
+
+        return data;
     }
 
-    private String getPassword() {
-        return getProperty(JELASTIC_PASSWORD_PROPERTY, password);
+    /**
+     * Keeps at most {@link #SAME_FILES_LIMIT} archives uploaded by this plugin for a given file name.
+     *
+     * <p>Housekeeping only: a failure here never fails the build.</p>
+     */
+    private void deleteObsoleteArchives(JelasticClient client, Authentication authentication) {
+        try {
+            Map<String, String> params = new LinkedHashMap<String, String>();
+            params.put("charset", "UTF-8");
+            params.put("session", authentication.getSession());
+
+            Archives archives = client.get(URL_GET_ARCHIVES, params, Archives.class);
+            if (archives == null || archives.getResult() != 0 || archives.getResponse() == null
+                    || archives.getResponse().getResult() != 0 || archives.getResponse().getObjects().isEmpty()) {
+                return;
+            }
+
+            List<Integer> ids = new ArrayList<Integer>();
+            for (Archive archive : archives.getResponse().getObjects()) {
+                if (artifactFile.getName().equals(archive.getName())
+                        && archive.getComment() != null && archive.getComment().startsWith(COMMENT_PREFIX)) {
+                    ids.add(archive.getId());
+                }
+            }
+
+            if (ids.size() < SAME_FILES_LIMIT) {
+                return;
+            }
+
+            Collections.sort(ids);
+
+            for (int id : ids.subList(0, ids.size() - SAME_FILES_LIMIT)) {
+                Map<String, String> parameters = new LinkedHashMap<String, String>(params);
+                parameters.put("id", String.valueOf(id));
+
+                getLog().debug("Deleting obsolete archive " + id);
+                client.get(URL_DELETE_ARCHIVE, parameters, null);
+            }
+        } catch (Exception e) {
+            getLog().debug("Clean up of the obsolete archives skipped: " + e.getMessage());
+        }
     }
 
-    private String getContext() {
-        return getProperty(CONTEXT_PROPERTY, context);
+    public Deploy deploy(JelasticClient client, Authentication authentication, UpLoader upLoader)
+            throws MojoExecutionException {
+        String targetEnvironment = getEnvironment();
+        if (!isNotEmpty(targetEnvironment)) {
+            throw new MojoExecutionException("No target environment: set <environment> in the plugin configuration "
+                    + "(or the jelastic-environment system property).");
+        }
+
+        Map<String, String> params = new LinkedHashMap<String, String>();
+        params.put("charset", "UTF-8");
+        params.put("session", authentication.getSession());
+        params.put("archiveUri", upLoader.getFile());
+        params.put("archiveName", upLoader.getName());
+        params.put("newContext", getContext());
+        params.put("domain", targetEnvironment);
+        params.put("nodeGroup", getNodeGroup());
+
+        String preDeployHookContent = getPreDeployHookContent();
+        if (preDeployHookContent != null) {
+            params.put("preDeployHook", preDeployHookContent);
+        }
+
+        String postDeployHookContent = getPostDeployHookContent();
+        if (postDeployHookContent != null) {
+            params.put("postDeployHook", postDeployHookContent);
+        }
+
+        String actionKey = System.getProperty(JELASTIC_ACTION_KEY);
+        if (actionKey != null) {
+            params.put("actionkey", actionKey);
+        }
+
+        if (deployParams != null) {
+            for (Map.Entry<String, String> entry : deployParams.entrySet()) {
+                if (entry.getValue() == null || entry.getValue().trim().isEmpty()) {
+                    continue;
+                }
+                params.put(entry.getKey(), entry.getValue());
+            }
+        }
+
+        Deploy deploy;
+        try {
+            deploy = client.get(URL_DEPLOY, params, Deploy.class);
+        } catch (IOException e) {
+            throw new MojoExecutionException("Deploy failed: " + e.getMessage(), e);
+        }
+
+        checkResult("Deploy", deploy.getResult(), deploy.getError());
+
+        Deploy.JelasticResponse response = deploy.getResponse();
+        if (response == null) {
+            throw new MojoExecutionException("Deploy failed: the platform returned no response body.");
+        }
+
+        checkResult("Deploy", response.getResult(), response.getError());
+
+        return deploy;
     }
 
-    private String getEnvironment() {
-        return getProperty(ENVIRONMENT_PROPERTY, environment);
+    private String getDeployOutput(Deploy deploy) {
+        Deploy.JelasticResponse response = deploy.getResponse();
+        if (response.getResponses() != null) {
+            StringBuilder sb = new StringBuilder();
+            for (Deploy.JelasticResponse.JelasticResponses nodeResponse : response.getResponses()) {
+                if (nodeResponse == null || nodeResponse.getOut() == null) {
+                    continue;
+                }
+                if (sb.length() > 0) {
+                    sb.append(System.getProperty("line.separator"));
+                }
+                sb.append(nodeResponse.getOut());
+            }
+
+            if (sb.length() > 0) {
+                return sb.toString();
+            }
+        }
+
+        return response.getOut() != null ? response.getOut() : "(no output)";
     }
 
-    private String getNodeGroup() {
-        return getProperty(NODE_GROUP_PROPERTY, nodeGroup);
+    /**
+     * Closes the session opened by this run. The artifact is already deployed at this point, so a failure here is
+     * reported but never fails the build.
+     */
+    public void logOut(JelasticClient client, Authentication authentication) {
+        Map<String, String> params = new LinkedHashMap<String, String>();
+        params.put("charset", "UTF-8");
+        params.put("session", authentication.getSession());
+
+        try {
+            LogOut logOut = client.get(URL_LOG_OUT, params, LogOut.class);
+            if (logOut.getResult() != 0) {
+                getLog().warn("           LogOut : FAILED - " + logOut.getError());
+            } else {
+                getLog().info("           LogOut : SUCCESS");
+            }
+        } catch (IOException e) {
+            getLog().warn("           LogOut : FAILED - " + e.getMessage());
+        }
+    }
+
+    private <T> T call(JelasticClient client, String step, String url, Map<String, String> params, Class<T> type)
+            throws MojoExecutionException {
+        try {
+            return client.post(url, params, type);
+        } catch (IOException e) {
+            throw new MojoExecutionException(step + " failed: " + e.getMessage(), e);
+        }
+    }
+
+    private String toJson(JelasticClient client, Map<String, Object> data) throws MojoExecutionException {
+        try {
+            return client.getMapper().writeValueAsString(data);
+        } catch (IOException e) {
+            throw new MojoExecutionException("Unable to build the archive description: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Fails the build with the message returned by the platform instead of a bare {@code NullPointerException}.
+     */
+    private void checkResult(String step, int result, String error) throws MojoExecutionException {
+        if (result == 0) {
+            return;
+        }
+
+        String message = step + " failed: " + (isNotEmpty(error) ? error : "no message returned by the platform")
+                + " [result=" + result + "]";
+        getLog().error(message);
+
+        throw new MojoExecutionException(message);
+    }
+
+    String getArtifactComment() {
+        String localComment = System.getProperty(JELASTIC_COMMENT_PROPERTY);
+
+        if (!isNotEmpty(localComment)) {
+            localComment = comment;
+        }
+
+        if (!isNotEmpty(localComment) && project != null && project.getModel() != null) {
+            localComment = project.getModel().getDescription();
+        }
+
+        if (!isNotEmpty(localComment)) {
+            return COMMENT_PREFIX;
+        }
+
+        return COMMENT_PREFIX + ". " + localComment.replaceAll("\\s+", " ").trim();
+    }
+
+    private String getSessionFromProperties() {
+        String session = System.getProperty(JELASTIC_SESSION_PROPERTY);
+
+        return isNotEmpty(session) ? session : null;
     }
 
     private String getApiToken() {
-        String apiTokenFromProps = System.getProperty(JELASTIC_TOKEN_PROPERTY);
-        if (apiTokenFromProps != null && apiTokenFromProps.length() > 0) {
-            apiToken = apiTokenFromProps;
+        String fromProperties = System.getProperty(JELASTIC_TOKEN_PROPERTY);
+
+        return isNotEmpty(fromProperties) ? fromProperties : apiToken;
+    }
+
+    private String getEmail() {
+        return getProperty(JELASTIC_EMAIL_PROPERTY, JELASTIC_EMAIL_PROPERTY, email);
+    }
+
+    private String getPassword() {
+        return getProperty(JELASTIC_PASSWORD_PROPERTY, JELASTIC_PASSWORD_PROPERTY, password);
+    }
+
+    private String getContext() {
+        return getProperty("jelastic-" + CONTEXT_PROPERTY, CONTEXT_PROPERTY, context);
+    }
+
+    private String getEnvironment() {
+        return getProperty("jelastic-" + ENVIRONMENT_PROPERTY, ENVIRONMENT_PROPERTY, environment);
+    }
+
+    private String getNodeGroup() {
+        return getProperty("jelastic-" + NODE_GROUP_PROPERTY, NODE_GROUP_PROPERTY, nodeGroup);
+    }
+
+    /**
+     * Reads a value from, in order, the system properties, the file pointed at by {@code jelastic-properties} and
+     * finally the plugin configuration.
+     */
+    private String getProperty(String systemPropertyName, String filePropertyName, String configuredValue) {
+        String fromSystem = System.getProperty(systemPropertyName);
+        if (isNotEmpty(fromSystem)) {
+            return fromSystem;
         }
 
-        return apiToken;
-    }
-
-    private String getProperty(String name, String defaultValue) {
-        if (isExternalParameterPassed()) {
-            if (properties.getProperty(name) != null && properties.getProperty(name).length() > 0) {
-                return properties.getProperty(name);
-            } else {
-                return defaultValue;
-            }
-        } else {
-            return defaultValue;
+        String fromFile = getExternalProperties().getProperty(filePropertyName);
+        if (isNotEmpty(fromFile)) {
+            return fromFile;
         }
+
+        return configuredValue;
     }
 
-    private String getPreDeployHookFilePath() {
-        return System.getProperty(JELASTIC_PREDEPLOY_HOOK_PROPERTY);
-    }
+    private Properties getExternalProperties() {
+        if (externalProperties != null) {
+            return externalProperties;
+        }
 
-    private String getPostDeployHookFilePath() {
-        return System.getProperty(JELASTIC_POSTDEPLOY_HOOK_PROPERTY);
-    }
-
-    private String getPreDeployHookContent() {
-        String preDeployHookFilePath = getPreDeployHookFilePath();
-        String preDeployHookContent = null;
-
-        if (preDeployHookFilePath != null && preDeployHookFilePath.length() > 0) {
+        externalProperties = new Properties();
+        String path = System.getProperty(JELASTIC_PROPERTIES_FILE);
+        if (isNotEmpty(path)) {
+            InputStream is = null;
             try {
-                preDeployHookContent = readFileContent(preDeployHookFilePath);
-            } catch (Exception ex) {
-                getLog().info("Can't read [preDeployHook] from [" + preDeployHookFilePath + "]:" + ex.getMessage());
+                is = Files.newInputStream(Paths.get(path));
+                Reader reader = new InputStreamReader(is, StandardCharsets.UTF_8);
+                externalProperties.load(reader);
+            } catch (IOException e) {
+                getLog().error("Unable to read [" + path + "]: " + e.getMessage());
+            } finally {
+                closeQuietly(is);
             }
         }
 
-        return preDeployHookContent;
-    }
-
-    private String getPostDeployHookContent() {
-        String postDeployHookFilePath = getPostDeployHookFilePath();
-        String postDeployHookContent = null;
-
-        if (postDeployHookFilePath != null && postDeployHookFilePath.length() > 0) {
-            try {
-                postDeployHookContent = readFileContent(postDeployHookFilePath);
-            } catch (Exception ex) {
-                getLog().info("Can't read [postDeployHook] from [" + postDeployHookFilePath + "]:" + ex.getMessage());
-            }
-        }
-
-        return postDeployHookContent;
-    }
-
-    private String readFileContent(String filePath) throws IOException {
-        InputStream is = new FileInputStream(filePath);
-        BufferedReader buf = new BufferedReader(new InputStreamReader(is));
-        String line = buf.readLine();
-        StringBuilder sb = new StringBuilder();
-        while (line != null) {
-            sb.append(line).append("\n");
-            line = buf.readLine();
-        }
-
-        return sb.toString();
+        return externalProperties;
     }
 
     public boolean isExternalParameterPassed() {
-        if (System.getProperty("jelastic-properties") != null && System.getProperty("jelastic-properties").length() > 0) {
-            try {
-                properties.load(new FileInputStream(System.getProperty("jelastic-properties")));
-            } catch (IOException e) {
-                getLog().error(e.getMessage(), e);
-                return false;
-            }
-        } else {
-            return false;
-        }
-
-        return true;
+        return !getExternalProperties().isEmpty();
     }
 
     public boolean isUploadOnly() {
-        String uploadOnly = System.getProperty("jelastic-upload-only");
-        return uploadOnly != null && (uploadOnly.equalsIgnoreCase("1") || uploadOnly.equalsIgnoreCase("true"));
-    }
+        if (uploadOnly) {
+            return true;
+        }
 
-    private String getActionKey() {
-        return System.getProperty(JELASTIC_ACTION_KEY);
+        String value = System.getProperty(JELASTIC_UPLOAD_ONLY_PROPERTY);
+
+        return value != null && (value.equalsIgnoreCase("1") || value.equalsIgnoreCase("true"));
     }
 
     private String getCustomArtifactName() {
-        String artifactName = getCustomArtifactNameFromProps();
-        if (artifactName == null || artifactName.length() == 0) {
-            artifactName = artifact;
-            if (artifactName == null || artifactName.length() == 0) {
-                return getCustomArtifactNameFromEnvVar();
-            }
+        String artifactName = System.getProperty(JELASTIC_ARTIFACT_NAME);
+        if (isNotEmpty(artifactName)) {
+            return artifactName;
         }
 
-        return artifactName;
-    }
+        if (isNotEmpty(artifact)) {
+            return artifact;
+        }
 
-    private String getCustomArtifactNameFromProps() {
-        return System.getProperty(JELASTIC_ARTIFACT_NAME);
+        return getCustomArtifactNameFromEnvVar();
     }
 
     private String getCustomArtifactNameFromEnvVar() {
-        //TODO: MSH: Переделать на использование другой проперти, добавит отдельную для имени проекта
-        String comment = System.getProperty(JELASTIC_COMMENT_PROPERTY);
-        getLog().debug("***** comment: " + comment);
-        if (comment == null || comment.length() == 0) {
+        String projectComment = System.getProperty(JELASTIC_COMMENT_PROPERTY);
+        getLog().debug("***** comment: " + projectComment);
+        if (!isNotEmpty(projectComment)) {
             return null;
         }
 
         //Get value for MAVEN_DEPLOY_ARTIFACT_project_name
-        String projectName = comment.replaceAll(" ", "_").replaceAll("-", "_");
+        String projectName = projectComment.replaceAll(" ", "_").replaceAll("-", "_");
         String envVar = MAVEN_DEPLOY_ARTIFACT_ENV + "_" + projectName;
         String value = System.getenv(envVar);
         getLog().debug(envVar + "=" + value);
 
-        if (value == null || value.length() == 0) {
+        if (!isNotEmpty(value)) {
             //Get value for MAVEN_DEPLOY_ARTIFACT
             value = System.getenv(MAVEN_DEPLOY_ARTIFACT_ENV);
             getLog().debug(MAVEN_DEPLOY_ARTIFACT_ENV + "=" + value);
@@ -453,597 +836,117 @@ public abstract class JelasticMojo extends AbstractMojo {
         return value;
     }
 
-    /*private String getCustomArtifactNameFromPomProps() {
-        String propNames = "";
-        Enumeration<?> propEnum = project.getProperties().propertyNames();
-        while (propEnum.hasMoreElements()) {
-            propNames += ", " + propEnum.nextElement().toString();
-        }
-
-        getLog().info("***** prop names: " + propNames);
-
-        String artifactName = project.getProperties().getProperty(JELASTIC_DEPLOYMENT_ARTIFACT_NAME);
-        getLog().info("***** properties size: " + project.getProperties().size());
-        getLog().info("***** " + JELASTIC_DEPLOYMENT_ARTIFACT_NAME + ": " + artifactName);
-
-        return artifactName;
-    }*/
-
-    Authentication authentication() throws MojoExecutionException {
-        Authentication authentication = new Authentication();
-        String jelasticHeaders = System.getProperty(JELASTIC_HEADERS_PROPERTY);
-
-        getLog().debug(JELASTIC_HEADERS_PROPERTY + "=" + jelasticHeaders);
-
-        if (jelasticHeaders != null && jelasticHeaders.length() > 0) {
-            try {
-                headers = mapper.readValue(URLDecoder.decode(jelasticHeaders, "UTF8"), Map.class);
-                getLog().debug("headers=" + headers);
-            } catch (IOException e) {
-                getLog().error(e.getMessage(), e);
-            }
-        }
-
-        String apiToken = getApiToken();
-        if (System.getProperty(JELASTIC_SESSION_PROPERTY) != null && System.getProperty(JELASTIC_SESSION_PROPERTY).length() > 0) {
-            getLog().debug("auth by " + JELASTIC_SESSION_PROPERTY);
-            authentication.setSession(System.getProperty(JELASTIC_SESSION_PROPERTY));
-            authentication.setResult(0);
-        } else if (apiToken != null && apiToken.length() > 0) {
-            getLog().debug("auth by apitoken");
-            authentication.setSession(apiToken);
-            authentication.setResult(0);
-        } else {
-            getLog().debug("auth by email/password");
-
-            Proxy mavenProxy = getMavenProxy();
-            UsernamePasswordCredentials usernamePasswordCredentials = getProxyCredential(mavenProxy);
-            HttpHost http_proxy = createHttpProxyProxy(mavenProxy);
-
-            try {
-                DefaultHttpClient httpclient = new DefaultHttpClient();
-                httpclient.getParams().setParameter(ClientPNames.COOKIE_POLICY, CookiePolicy.BROWSER_COMPATIBILITY);
-                httpclient.getParams().setParameter("http.protocol.single-cookie-header", Boolean.TRUE);
-
-                httpclient = wrapClient(httpclient);
-                if (http_proxy != null) {
-                    httpclient.getParams().setParameter(ConnRoutePNames.DEFAULT_PROXY, http_proxy);
-
-                    if (usernamePasswordCredentials != null) {
-                        httpclient.getCredentialsProvider().setCredentials(new AuthScope(AuthScope.ANY_HOST, AuthScope.ANY_PORT), usernamePasswordCredentials);
-                    }
-                }
-
-                httpclient.getParams().setParameter(ConnRoutePNames.DEFAULT_PROXY, http_proxy);
-
-                List<NameValuePair> qparams = new ArrayList<NameValuePair>();
-                qparams.add(new BasicNameValuePair("login", getEmail()));
-                qparams.add(new BasicNameValuePair("password", getPassword()));
-
-                URI uri = URIUtils.createURI(getShema(), getApiJelastic(), getPort(), getUrlAuthentication(), null, null);
-                getLog().debug(uri.toString());
-
-                HttpPost httpPost = new HttpPost(uri);
-                httpPost.setEntity(new UrlEncodedFormEntity(qparams, "UTF-8"));
-
-                ResponseHandler<String> responseHandler = new BasicResponseHandler();
-                String responseBody = httpclient.execute(httpPost, responseHandler);
-                cookieStore = httpclient.getCookieStore();
-
-                List<Cookie> cookies = cookieStore.getCookies();
-                for (Cookie cookie : cookies) {
-                    getLog().debug(cookie.getName() + " = " + cookie.getValue());
-                }
-
-                getLog().debug(responseBody);
-                authentication = mapper.readValue(responseBody, Authentication.class);
-            } catch (URISyntaxException e) {
-                getLog().error(e.getMessage(), e);
-            } catch (ClientProtocolException e) {
-                getLog().error(e.getMessage(), e);
-            } catch (IOException e) {
-                getLog().error(e.getMessage(), e);
-            }
-        }
-
-        return authentication;
+    private String getPreDeployHookContent() {
+        return readHook(JELASTIC_PREDEPLOY_HOOK_PROPERTY, "preDeployHook");
     }
 
-    public UpLoader upload(Authentication authentication) throws MojoExecutionException {
-        UpLoader upLoader = null;
-        Proxy mavenProxy = getMavenProxy();
-        UsernamePasswordCredentials usernamePasswordCredentials = getProxyCredential(mavenProxy);
-        HttpHost http_proxy = createHttpProxyProxy(mavenProxy);
+    private String getPostDeployHookContent() {
+        return readHook(JELASTIC_POSTDEPLOY_HOOK_PROPERTY, "postDeployHook");
+    }
+
+    private String readHook(String property, String label) {
+        String path = System.getProperty(property);
+        if (!isNotEmpty(path)) {
+            return null;
+        }
 
         try {
-            DefaultHttpClient httpclient = new DefaultHttpClient();
-            httpclient = wrapClient(httpclient);
-            if (http_proxy != null) {
-                httpclient.getParams().setParameter(ConnRoutePNames.DEFAULT_PROXY, http_proxy);
-                if (usernamePasswordCredentials != null) {
-                    httpclient.getCredentialsProvider().setCredentials(new AuthScope(AuthScope.ANY_HOST, AuthScope.ANY_PORT), usernamePasswordCredentials);
-                }
-            }
-
-            httpclient.getParams().setParameter(ConnRoutePNames.DEFAULT_PROXY, http_proxy);
-            httpclient.getParams().setParameter(ClientPNames.COOKIE_POLICY, CookiePolicy.BROWSER_COMPATIBILITY);
-            httpclient.getParams().setParameter("http.protocol.single-cookie-header", Boolean.TRUE);
-            httpclient.setCookieStore(getCookieStore());
-
-            for (Cookie cookie : httpclient.getCookieStore().getCookies()) {
-                getLog().debug(cookie.getName() + " = " + cookie.getValue());
-            }
-
-            File[] files = outputDirectory.listFiles(new FileFilter() {
-                public boolean accept(File pathname) {
-                    return pathname.isFile() && pathname.getName().matches(".*\\.(" + WAR_TYPE + "|" + EAR_TYPE + "|" + JAR_TYPE + ")$");
-                }
-            });
-
-            if (files == null || files.length == 0) {
-                throw new MojoExecutionException("Output directory doesn't contain artifacts");
-            }
-
-            //The biggest is the first
-            List<File> fileList = new ArrayList<File>(Arrays.asList(files));
-            Collections.sort(fileList, new Comparator<File>() {
-                public int compare(File o1, File o2) {
-                    if (o1.length() > o2.length()) {
-                        return -1;
-                    }
-
-                    if (o1.length() < o2.length()) {
-                        return 1;
-                    }
-
-                    return 0;
-                }
-            });
-
-            String customArtifactName = getCustomArtifactName();
-            if (customArtifactName != null && customArtifactName.length() > 0) {
-                String artifactPath = outputDirectory + File.separator + customArtifactName;
-                getLog().debug("Custom artifact path: " + artifactPath);
-                artifactFile = new File(artifactPath);
-                if (!artifactFile.exists()) {
-                    artifactFile = fileList.get(0);
-                }
-            } else {
-                //ignore default artifact file (remove this for rollback 'The biggest is the first' algorithm)
-                artifactFile = null;
-            }
-
-            if (artifactFile == null || !artifactFile.exists()) {
-                artifactFile = fileList.get(0);
-            }
-
-            getLog().debug("Found artifacts:");
-
-            for (File file : fileList) {
-                getLog().debug("\t" + (artifactFile.getName().equalsIgnoreCase(file.getName()) ? "(*) " : "  * ") + file.getName() + " - " + file.length());
-            }
-
-            getLog().debug("Selected artifact: " + artifactFile.getAbsolutePath());
-
-            /*if (!artifactFile.exists()) {
-                String externalFileName = getWarNameFromWarPlugin();
-                if (externalFileName != null) {
-                    String artifactPath = outputDirectory + File.separator + externalFileName + "." + packaging;
-                    File extPlufinConfiguration = new File(artifactPath);
-                    if (!extPlufinConfiguration.exists()) {
-                        throw new MojoExecutionException("First build artifact and try again. Artifact not found " + extPlufinConfiguration.getName());
-                    }
-
-                    getLog().info("Found another configuration artifact name is " + extPlufinConfiguration.getName());
-
-                    artifactFile = new File(artifactPath);
-                } else {
-                    throw new MojoExecutionException("First build artifact and try again. Artifact not found " + artifactFile.getName());
-                }
-            }*/
-
-            getLog().info("File Uploading Progress :");
-
-            CustomMultiPartEntity multipartEntity = new CustomMultiPartEntity(HttpMultipartMode.BROWSER_COMPATIBLE, new CustomMultiPartEntity.ProgressListener() {
-                public void transferred(long num) {
-                    if (((int) ((num / (float) totalSize) * 100)) != numSt) {
-                        getLog().info("[" + (int) ((num / (float) totalSize) * 100) + "%]");
-                        numSt = ((int) ((num / (float) totalSize) * 100));
-                    }
-                }
-            });
-
-            multipartEntity.addPart("fid", new StringBody("123456"));
-            multipartEntity.addPart("session", new StringBody(authentication.getSession()));
-            multipartEntity.addPart("file", new FileBody(artifactFile));
-
-            totalSize = multipartEntity.getContentLength();
-
-            URI uri = URIUtils.createURI(getShema(), getApiJelastic(), getPort(), getUrlUploader(), null, null);
-            getLog().debug(uri.toString());
-            HttpPost httpPost = new HttpPost(uri);
-            addHeaders(httpPost);
-            httpPost.setEntity(multipartEntity);
-
-            ResponseHandler<String> responseHandler = new BasicResponseHandler();
-            String responseBody = httpclient.execute(httpPost, responseHandler);
-            getLog().debug(responseBody);
-            upLoader = mapper.readValue(responseBody, UpLoader.class);
-
-            if (!isEmpty(upLoader.getFile())) {
-                String fileUrl = upLoader.getFile();
-                fileUrl = fileUrl.replaceFirst(HTTP_PROTOCOL, HTTPS_PROTOCOL);
-                if (isAvailableByHttps(fileUrl)) {
-                    upLoader.setFile(fileUrl);
-                }
-            }
-        } catch (URISyntaxException e) {
-            getLog().error(e.getMessage(), e);
-        } catch (ClientProtocolException e) {
-            getLog().error(e.getMessage(), e);
+            byte[] content = Files.readAllBytes(Paths.get(path));
+            return new String(content, StandardCharsets.UTF_8);
         } catch (IOException e) {
-            getLog().error(e.getMessage(), e);
-        }
-
-        return upLoader;
-    }
-
-    private String getArtifactComment() {
-        String comment = COMMENT_PREFIX;
-        String localComment = null;
-        String jelasticComment = System.getProperty(JELASTIC_COMMENT_PROPERTY);
-
-        if (StringUtils.isNotEmpty(jelasticComment)) {
-            localComment = jelasticComment;
-        } else if (project.getModel().getDescription() != null) {
-            localComment = project.getModel().getDescription();
-        }
-
-        if (StringUtils.isNotEmpty(localComment)) {
-            comment += ". " + localComment.replaceAll("\\n", "");
-        }
-
-        return comment;
-    }
-
-    public CreateObject createObject(UpLoader upLoader, final Authentication authentication) {
-        final String comment = getArtifactComment();
-
-        Map<String, String> params = new HashMap<String, String>();
-
-        params.put("charset", "UTF-8");
-        params.put("session", authentication.getSession());
-        params.put("type", "JDeploy");
-        params.put("data", "{'name':'" + artifactFile.getName() + "', 'archive':'" + upLoader.getFile() + "', 'link':0, 'size':" + upLoader.getSize() + ", 'comment':'" + comment + "'}");
-
-        CreateObject createObject = makeRequest(getUrlCreateObject(), params, CreateObject.class);
-
-        new Thread(new Runnable() {
-            public void run() {
-                Map<String, String> params = new HashMap<String, String>();
-                params.put("charset", "UTF-8");
-                params.put("session", authentication.getSession());
-
-                Archives archives = makeRequest(getUrlGetArchives(), params, Archives.class);
-
-                if (archives == null || archives.getResult() != 0 || archives.getResponse().getResult() != 0 || archives.getResponse().getObjects().isEmpty()) {
-                    return;
-                }
-
-                List<Integer> ids = new ArrayList<Integer>();
-
-                for (Archive archive : archives.getResponse().getObjects()) {
-                    if (archive.getName().equals(artifactFile.getName()) && StringUtils.isNotEmpty(archive.getComment()) && archive.getComment().startsWith(COMMENT_PREFIX)) {
-                        ids.add(archive.getId());
-                    }
-                }
-
-                if (ids.size() < SAME_FILES_LIMIT) {
-                    return;
-                }
-
-                Collections.sort(ids);
-
-                for (int id : ids.subList(0, ids.size() - SAME_FILES_LIMIT)) {
-                    Map<String, String> parameters = new HashMap<String, String>(params);
-                    parameters.put("id", String.valueOf(id));
-
-                    getLog().debug("parameters: " + parameters);
-                    makeRequest(getUrlDeleteArchive(), parameters, null);
-                }
-            }
-        }).start();
-
-        return createObject;
-    }
-
-    public <T> T makeRequest(String url, Map<String, String> params, Class<T> clazz) {
-        Proxy mavenProxy = getMavenProxy();
-        UsernamePasswordCredentials usernamePasswordCredentials = getProxyCredential(mavenProxy);
-        HttpHost http_proxy = createHttpProxyProxy(mavenProxy);
-
-        try {
-            final DefaultHttpClient httpclient = wrapClient(new DefaultHttpClient());
-
-            if (http_proxy != null) {
-                httpclient.getParams().setParameter(ConnRoutePNames.DEFAULT_PROXY, http_proxy);
-
-                if (usernamePasswordCredentials != null) {
-                    httpclient.getCredentialsProvider().setCredentials(new AuthScope(AuthScope.ANY_HOST, AuthScope.ANY_PORT), usernamePasswordCredentials);
-                }
-            }
-
-            httpclient.getParams().setParameter(ConnRoutePNames.DEFAULT_PROXY, http_proxy);
-            httpclient.getParams().setParameter(ClientPNames.COOKIE_POLICY, CookiePolicy.BROWSER_COMPATIBILITY);
-            httpclient.getParams().setParameter("http.protocol.single-cookie-header", Boolean.TRUE);
-
-            httpclient.setCookieStore(getCookieStore());
-
-            for (Cookie cookie : httpclient.getCookieStore().getCookies()) {
-                getLog().debug(cookie.getName() + " = " + cookie.getValue());
-            }
-
-            List<NameValuePair> nameValuePairList = new ArrayList<NameValuePair>();
-
-            for (String key : params.keySet()) {
-                nameValuePairList.add(new BasicNameValuePair(key, params.get(key)));
-            }
-
-            UrlEncodedFormEntity entity = new UrlEncodedFormEntity(nameValuePairList, "UTF-8");
-
-            URI uri = URIUtils.createURI(getShema(), getApiJelastic(), getPort(), url, null, null);
-            getLog().debug(uri.toString());
-
-            HttpPost httpPost = new HttpPost(uri);
-            addHeaders(httpPost);
-            httpPost.setEntity(entity);
-
-            ResponseHandler<String> responseHandler = new BasicResponseHandler();
-
-            String responseBody = httpclient.execute(httpPost, responseHandler);
-            getLog().debug(responseBody);
-
-            if (clazz != null) {
-                return clazz.cast(mapper.readValue(responseBody, clazz));
-            }
-        } catch (URISyntaxException e) {
-            getLog().error(e.getMessage(), e);
-        } catch (ClientProtocolException e) {
-            getLog().error(e.getMessage(), e);
-        } catch (IOException e) {
-            getLog().error(e.getMessage(), e);
-        }
-
-        return null;
-    }
-
-    public Deploy deploy(Authentication authentication, UpLoader upLoader, CreateObject createObject) {
-        Deploy deploy = null;
-        Proxy mavenProxy = getMavenProxy();
-        UsernamePasswordCredentials usernamePasswordCredentials = getProxyCredential(mavenProxy);
-        HttpHost http_proxy = createHttpProxyProxy(mavenProxy);
-
-        try {
-            DefaultHttpClient httpclient = new DefaultHttpClient();
-            httpclient = wrapClient(httpclient);
-            if (http_proxy != null) {
-                httpclient.getParams().setParameter(ConnRoutePNames.DEFAULT_PROXY, http_proxy);
-                if (usernamePasswordCredentials != null) {
-                    httpclient.getCredentialsProvider().setCredentials(new AuthScope(AuthScope.ANY_HOST, AuthScope.ANY_PORT), usernamePasswordCredentials);
-                }
-            }
-
-            httpclient.getParams().setParameter(ClientPNames.COOKIE_POLICY, CookiePolicy.BROWSER_COMPATIBILITY);
-            httpclient.getParams().setParameter("http.protocol.single-cookie-header", Boolean.TRUE);
-            httpclient.setCookieStore(getCookieStore());
-
-            for (Cookie cookie : httpclient.getCookieStore().getCookies()) {
-                getLog().debug(cookie.getName() + " = " + cookie.getValue());
-            }
-
-            List<NameValuePair> qparams = new ArrayList<NameValuePair>();
-            qparams.add(new BasicNameValuePair("charset", "UTF-8"));
-            qparams.add(new BasicNameValuePair("session", authentication.getSession()));
-            qparams.add(new BasicNameValuePair("archiveUri", upLoader.getFile()));
-            qparams.add(new BasicNameValuePair("archiveName", upLoader.getName()));
-            qparams.add(new BasicNameValuePair("newContext", getContext()));
-            qparams.add(new BasicNameValuePair("domain", getEnvironment()));
-            qparams.add(new BasicNameValuePair("nodeGroup", getNodeGroup()));
-
-            String preDeployHookContent = getPreDeployHookContent();
-            if (preDeployHookContent != null) {
-                qparams.add(new BasicNameValuePair("preDeployHook", preDeployHookContent));
-            }
-
-            String postDeployHookContent = getPostDeployHookContent();
-            if (postDeployHookContent != null) {
-                qparams.add(new BasicNameValuePair("postDeployHook", postDeployHookContent));
-            }
-
-            String actionKey = getActionKey();
-            if (actionKey != null) {
-                qparams.add(new BasicNameValuePair("actionkey", actionKey));
-            }
-
-            if (deployParams != null) {
-                for (Map.Entry<String, String> entry : deployParams.entrySet()) {
-                    if (entry.getValue() == null || entry.getValue().trim().length() == 0) {
-                        continue;
-                    }
-                    qparams.add(new BasicNameValuePair(entry.getKey(), entry.getValue()));
-                }
-            }
-
-            URI uri = URIUtils.createURI(getShema(), getApiJelastic(), getPort(), getUrlDeploy(), URLEncodedUtils.format(qparams, "UTF-8"), null);
-            getLog().debug(uri.toString());
-            HttpGet httpPost = new HttpGet(uri);
-            addHeaders(httpPost);
-            ResponseHandler<String> responseHandler = new BasicResponseHandler();
-            String responseBody = httpclient.execute(httpPost, responseHandler);
-            getLog().debug(responseBody);
-            deploy = mapper.readValue(responseBody, Deploy.class);
-        } catch (URISyntaxException e) {
-            getLog().error(e.getMessage(), e);
-        } catch (ClientProtocolException e) {
-            getLog().error(e.getMessage(), e);
-        } catch (IOException e) {
-            getLog().error(e.getMessage(), e);
-        }
-
-        return deploy;
-    }
-
-    public LogOut logOut(Authentication authentication) {
-        LogOut logOut = null;
-        Proxy mavenProxy = getMavenProxy();
-        UsernamePasswordCredentials usernamePasswordCredentials = getProxyCredential(mavenProxy);
-        HttpHost http_proxy = createHttpProxyProxy(mavenProxy);
-
-        try {
-            DefaultHttpClient httpclient = new DefaultHttpClient();
-            httpclient = wrapClient(httpclient);
-            if (http_proxy != null) {
-                httpclient.getParams().setParameter(ConnRoutePNames.DEFAULT_PROXY, http_proxy);
-                if (usernamePasswordCredentials != null) {
-                    httpclient.getCredentialsProvider().setCredentials(new AuthScope(AuthScope.ANY_HOST, AuthScope.ANY_PORT), usernamePasswordCredentials);
-                }
-            }
-            httpclient.getParams().setParameter(ClientPNames.COOKIE_POLICY, CookiePolicy.BROWSER_COMPATIBILITY);
-            httpclient.getParams().setParameter("http.protocol.single-cookie-header", Boolean.TRUE);
-            httpclient.setCookieStore(getCookieStore());
-
-            for (Cookie cookie : httpclient.getCookieStore().getCookies()) {
-                getLog().debug(cookie.getName() + " = " + cookie.getValue());
-            }
-
-            List<NameValuePair> qparams = new ArrayList<NameValuePair>();
-            qparams.add(new BasicNameValuePair("charset", "UTF-8"));
-            qparams.add(new BasicNameValuePair("session", authentication.getSession()));
-
-            URI uri = URIUtils.createURI(getShema(), getApiJelastic(), getPort(), getUrlLogOut(), URLEncodedUtils.format(qparams, "UTF-8"), null);
-            getLog().debug(uri.toString());
-            HttpGet httpPost = new HttpGet(uri);
-            addHeaders(httpPost);
-            ResponseHandler<String> responseHandler = new BasicResponseHandler();
-            String responseBody = httpclient.execute(httpPost, responseHandler);
-            getLog().debug(responseBody);
-            logOut = mapper.readValue(responseBody, LogOut.class);
-        } catch (URISyntaxException e) {
-            getLog().error(e.getMessage(), e);
-        } catch (ClientProtocolException e) {
-            getLog().error(e.getMessage(), e);
-        } catch (IOException e) {
-            getLog().error(e.getMessage(), e);
-        }
-        return logOut;
-    }
-
-    private void addHeaders(AbstractHttpMessage message) {
-        if (headers != null) {
-            for (String key : headers.keySet()) {
-                String value = headers.get(key);
-                getLog().debug(key + "=" + value);
-                message.addHeader(key, value);
-            }
-        }
-    }
-
-    public static DefaultHttpClient wrapClient(DefaultHttpClient base) {
-        try {
-            SSLContext ctx = SSLContext.getInstance("TLS");
-            X509TrustManager tm = new X509TrustManager() {
-                public void checkClientTrusted(X509Certificate[] xcs, String string) throws CertificateException {
-                }
-
-                public void checkServerTrusted(X509Certificate[] xcs, String string) throws CertificateException {
-                }
-
-                public X509Certificate[] getAcceptedIssuers() {
-                    return null;
-                }
-            };
-            ctx.init(null, new TrustManager[]{tm}, null);
-            SSLSocketFactory ssf = new SSLSocketFactory(ctx);
-            ssf.setHostnameVerifier(SSLSocketFactory.ALLOW_ALL_HOSTNAME_VERIFIER);
-            ClientConnectionManager ccm = base.getConnectionManager();
-            SchemeRegistry sr = ccm.getSchemeRegistry();
-            sr.register(new Scheme("https", ssf, 443));
-            return new DefaultHttpClient(ccm, base.getParams());
-        } catch (Exception ex) {
-            ex.printStackTrace();
+            getLog().warn("Can't read [" + label + "] from [" + path + "]: " + e.getMessage());
             return null;
         }
     }
 
-    public String getWarNameFromWarPlugin() {
-        MavenProject mavenProject = ((MavenProject) getPluginContext().get("project"));
-        List<Plugin> plugins = mavenProject.getOriginalModel().getBuild().getPlugins();
-        for (Plugin plugin : plugins) {
-            if (plugin.getArtifactId().equals("maven-war-plugin")) {
-                Xpp3Dom xpp3Dom = (Xpp3Dom) plugin.getConfiguration();
-                Xpp3Dom[] xpp3Doms = xpp3Dom.getChildren();
-                for (Xpp3Dom dom : xpp3Doms) {
-                    if (dom.getName().equals("warName")) {
-                        return dom.getValue();
-                    }
-                }
-            }
-        }
-        return null;
-    }
-
-    public static String getUrlGetArchives() {
-        return URL_GET_ARCHIVES;
-    }
-
-    public static String getUrlDeleteArchive() {
-        return URL_DELETE_ARCHIVE;
-    }
-
+    /**
+     * Returns the first active proxy of {@code settings.xml} able to serve the API host.
+     */
     private Proxy getMavenProxy() {
+        if (mavenSession == null || mavenSession.getSettings() == null) {
+            return null;
+        }
+
         List<Proxy> proxyList = mavenSession.getSettings().getProxies();
+        if (proxyList == null) {
+            return null;
+        }
+
         for (Proxy proxy : proxyList) {
-            if (proxy.getProtocol().equalsIgnoreCase("http") || proxy.isActive()) {
-                return proxy;
-            } else if (proxy.getProtocol().equalsIgnoreCase("https") || proxy.isActive()) {
-                return proxy;
+            if (!proxy.isActive()) {
+                continue;
             }
+
+            String protocol = proxy.getProtocol();
+            if (protocol != null && !HTTP_PROTOCOL.equalsIgnoreCase(protocol)
+                    && !HTTPS_PROTOCOL.equalsIgnoreCase(protocol)) {
+                continue;
+            }
+
+            if (isNonProxyHost(proxy.getNonProxyHosts(), getApiJelastic())) {
+                getLog().debug("Host [" + getApiJelastic() + "] excluded from the proxy by nonProxyHosts");
+                continue;
+            }
+
+            return proxy;
         }
 
         return null;
     }
 
-    private HttpHost createHttpProxyProxy(Proxy proxy) {
-        if (proxy == null) {
-            return null;
+    static boolean isNonProxyHost(String nonProxyHosts, String host) {
+        if (nonProxyHosts == null || nonProxyHosts.trim().isEmpty() || host == null) {
+            return false;
         }
 
-        return new HttpHost(proxy.getHost(), proxy.getPort(), proxy.getProtocol());
-    }
-
-    private UsernamePasswordCredentials getProxyCredential(Proxy proxy) {
-        UsernamePasswordCredentials credentials = null;
-        if (proxy != null) {
-            if (proxy.getUsername() != null || proxy.getPassword() != null) {
-                credentials = new UsernamePasswordCredentials(proxy.getUsername(), proxy.getPassword());
+        for (String pattern : nonProxyHosts.split("[|,]")) {
+            String trimmed = pattern.trim();
+            if (trimmed.isEmpty()) {
+                continue;
             }
-        }
 
-        return credentials;
-    }
-
-    private boolean isAvailableByHttps(String fileUrl) {
-        try {
-            HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
-            connection.setConnectTimeout(5000);
-            return connection.getResponseCode() == 200;
-        } catch (IOException e) {
+            String regex = "\\Q" + trimmed.replace("*", "\\E.*\\Q") + "\\E";
+            if (host.matches(regex)) {
+                return true;
+            }
         }
 
         return false;
     }
 
-    private boolean isEmpty(String str) {
-        return str == null || str.length() == 0;
+    private boolean isAvailableByHttps(String fileUrl) {
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) URI.create(fileUrl).toURL().openConnection();
+            connection.setRequestMethod("HEAD");
+            connection.setConnectTimeout(connectTimeoutSeconds * 1000);
+            connection.setReadTimeout(connectTimeoutSeconds * 1000);
+
+            return connection.getResponseCode() == HttpURLConnection.HTTP_OK;
+        } catch (IOException e) {
+            getLog().debug("[" + fileUrl + "] is not reachable over HTTPS: " + e.getMessage());
+            return false;
+        } catch (IllegalArgumentException e) {
+            getLog().debug("[" + fileUrl + "] is not a valid URL: " + e.getMessage());
+            return false;
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
+    private void closeQuietly(InputStream is) {
+        if (is != null) {
+            try {
+                is.close();
+            } catch (IOException e) {
+                getLog().debug("Unable to close the stream: " + e.getMessage());
+            }
+        }
+    }
+
+    private static boolean isNotEmpty(String value) {
+        return value != null && !value.isEmpty();
     }
 }

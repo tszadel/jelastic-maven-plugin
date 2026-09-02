@@ -1,6 +1,7 @@
 package com.jelastic.model;
 
-import org.codehaus.jackson.annotate.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -13,6 +14,7 @@ public class Archives {
 
         private JelasticResponse response;
         private int result;
+        @JsonDeserialize(using = ErrorMessageDeserializer.class)
         private String error;
         private Debug debug;
 
@@ -23,6 +25,7 @@ public class Archives {
         @JsonIgnoreProperties(ignoreUnknown = true)
         public static class JelasticResponse {
             private int result;
+            @JsonDeserialize(using = ErrorMessageDeserializer.class)
             private String error;
             private List<Archive> objects =  new ArrayList<Archive>();
 
@@ -46,7 +49,7 @@ public class Archives {
                 return objects;
             }
 
-            public void setObject(List<Archive> objects) {
+            public void setObjects(List<Archive> objects) {
                 this.objects = objects;
             }
         }

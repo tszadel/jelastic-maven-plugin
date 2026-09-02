@@ -3,12 +3,14 @@ package com.jelastic.model;
 
 //{"response":{"result":8,"error":"access not permitted [subject = 11759/0 accessObject = [JDeploy, JDeploy/*] rights = [CREATE, CREATE_ONCE]]"},"result":0,"debug":{"time":64,"cpu":{"usage":9.757838,"time":50}}}
 
-import org.codehaus.jackson.annotate.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class CreateObject {
     private JelasticResponse response;
     private int result;
+    @JsonDeserialize(using = ErrorMessageDeserializer.class)
     private String error;
     private Debug debug;
 
@@ -49,6 +51,7 @@ public class CreateObject {
     public static class JelasticResponse {
         private int id;
         private int result;
+        @JsonDeserialize(using = ErrorMessageDeserializer.class)
         private String error;
         private JelasticObject object;
 

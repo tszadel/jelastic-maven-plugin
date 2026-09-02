@@ -1,6 +1,7 @@
 package com.jelastic.model;
 
-import org.codehaus.jackson.annotate.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 
 /**
  * User: Igor.Yova@gmail.com
@@ -13,13 +14,14 @@ public class UpLoader {
     private String file;
     private JelasticRequest request;
     private String name;
-    private int size;
+    private long size;
+    @JsonDeserialize(using = ErrorMessageDeserializer.class)
     private String error;
 
     public UpLoader() {
     }
 
-    public UpLoader(int result, String file, JelasticRequest request, String name, int size, String error) {
+    public UpLoader(int result, String file, JelasticRequest request, String name, long size, String error) {
         this.result = result;
         this.file = file;
         this.request = request;
@@ -109,11 +111,11 @@ public class UpLoader {
         this.name = name;
     }
 
-    public int getSize() {
+    public long getSize() {
         return size;
     }
 
-    public void setSize(int size) {
+    public void setSize(long size) {
         this.size = size;
     }
 

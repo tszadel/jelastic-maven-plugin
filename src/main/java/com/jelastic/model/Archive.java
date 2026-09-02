@@ -1,6 +1,6 @@
 package com.jelastic.model;
 
-import org.codehaus.jackson.annotate.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 /**
  * Created by doba on 6/17/15.

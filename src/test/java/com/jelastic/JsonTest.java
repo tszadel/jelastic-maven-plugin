@@ -1,96 +1,116 @@
 package com.jelastic;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jelastic.model.Authentication;
 import com.jelastic.model.CreateObject;
 import com.jelastic.model.Deploy;
+import com.jelastic.model.LogOut;
 import com.jelastic.model.UpLoader;
-import org.codehaus.jackson.map.ObjectMapper;
-import org.junit.Ignore;
 import org.junit.Test;
 
 import java.net.URL;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 
 /**
- * User: Igor.Yova@gmail.com
- * Date: 6/9/11
- * Time: 12:03 PM
+ * Parsing of the answers returned by the platform.
  */
-
 public class JsonTest {
+
+    private final ObjectMapper mapper = new ObjectMapper()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+
+    private <T> T read(String resource, Class<T> type) throws Exception {
+        URL url = getClass().getClassLoader().getResource(resource);
+        assertNotNull("missing test resource " + resource, url);
+
+        return mapper.readValue(url, type);
+    }
 
     @Test
     public void authOkTest() throws Exception {
-        ObjectMapper mapper = new ObjectMapper();
-        URL url = this.getClass().getClassLoader().getResource("authentication_ok.json");
-        Authentication authentication = mapper.readValue(url, Authentication.class);
-        assertEquals(authentication.getSession(), "48bxaad71ccc7996325f3803311326b0247d");
+        Authentication authentication = read("authentication_ok.json", Authentication.class);
+        assertEquals("48bxaad71ccc7996325f3803311326b0247d", authentication.getSession());
+        assertEquals(0, authentication.getResult());
+        assertNull(authentication.getError());
     }
 
     @Test
     public void authErrorTest() throws Exception {
-        ObjectMapper mapper = new ObjectMapper();
-        URL url = this.getClass().getClassLoader().getResource("authentication_error.json");
-        Authentication authentication = mapper.readValue(url, Authentication.class);
-        assertEquals(authentication.getError(), "authentication failed");
+        Authentication authentication = read("authentication_error.json", Authentication.class);
+        assertEquals("authentication failed", authentication.getError());
+        assertEquals(701, authentication.getResult());
     }
 
+    /**
+     * Some hosters answer through a gateway that returns a structured error instead of a plain string.
+     */
+    @Test
+    public void authErrorAsObjectTest() throws Exception {
+        Authentication authentication = read("authentication_error_object.json", Authentication.class);
+        assertEquals("401 - Le jeton d'authentification est invalide", authentication.getError());
+        assertEquals(401, authentication.getResult());
+    }
 
     @Test
-    @Ignore
     public void createObjectOkTest() throws Exception {
-        ObjectMapper mapper = new ObjectMapper();
-        URL url = this.getClass().getClassLoader().getResource("createobject_ok.json");
-        CreateObject createObject = mapper.readValue(url, CreateObject.class);
-        assertEquals(createObject.getResponse().getId(), 247);
+        CreateObject createObject = read("createobject_ok.json", CreateObject.class);
+        assertEquals(0, createObject.getResult());
+        assertEquals(247, createObject.getResponse().getId());
+        assertEquals(247, createObject.getResponse().getObject().getId());
     }
 
     @Test
-    @Ignore
     public void createObjectErrorTest() throws Exception {
-        ObjectMapper mapper = new ObjectMapper();
-        URL url = this.getClass().getClassLoader().getResource("createobject_error.json");
-        CreateObject createObject = mapper.readValue(url, CreateObject.class);
-        assertEquals(createObject.getError(), "invalid parameter [session]");
+        CreateObject createObject = read("createobject_error.json", CreateObject.class);
+        assertEquals("invalid parameter [session]", createObject.getError());
+        assertNull(createObject.getResponse());
+    }
+
+    @Test
+    public void createObjectErrorAsListTest() throws Exception {
+        CreateObject createObject = read("createobject_error_list.json", CreateObject.class);
+        assertEquals("quota exceeded; try again later", createObject.getError());
     }
 
     @Test
     public void upLoaderOkTest() throws Exception {
-        ObjectMapper mapper = new ObjectMapper();
-        URL url = this.getClass().getClassLoader().getResource("uploader_ok.json");
-        UpLoader upLoader = mapper.readValue(url, UpLoader.class);
-        assertEquals(upLoader.getName(), "jelastic-maven-plugin-1.0-SNAPSHOT.jar");
+        UpLoader upLoader = read("uploader_ok.json", UpLoader.class);
+        assertEquals("jelastic-maven-plugin-1.0-SNAPSHOT.jar", upLoader.getName());
+        assertEquals(14498L, upLoader.getSize());
     }
 
     @Test
     public void upLoaderErrorTest() throws Exception {
-        ObjectMapper mapper = new ObjectMapper();
-        URL url = this.getClass().getClassLoader().getResource("uploader_error.json");
-        UpLoader upLoader = mapper.readValue(url, UpLoader.class);
-        assertEquals(upLoader.getError(), "invalid param");
+        UpLoader upLoader = read("uploader_error.json", UpLoader.class);
+        assertEquals("invalid param", upLoader.getError());
     }
 
+    /**
+     * A failed deployment carries a null response: reading it must not blow up.
+     */
     @Test
     public void deployErrorTest() throws Exception {
-        ObjectMapper mapper = new ObjectMapper();
-        URL url = this.getClass().getClassLoader().getResource("deploy_error.json");
-        Deploy deploy = mapper.readValue(url, Deploy.class);
-        assertEquals(deploy.getError(), "application [8129583aae37a4b556d36dbd56abbc68,8129583aae37a4b556d36dbd56abbc68] not exist");
+        Deploy deploy = read("deploy_error.json", Deploy.class);
+        assertEquals("application [8129583aae37a4b556d36dbd56abbc68,8129583aae37a4b556d36dbd56abbc68] not exist",
+                deploy.getError());
+        assertNull(deploy.getResponse());
+        assertEquals(11, deploy.getResult());
     }
 
     @Test
     public void deployOkTest() throws Exception {
-        ObjectMapper mapper = new ObjectMapper();
-        URL url = this.getClass().getClassLoader().getResource("deploy_ok.json");
-        Deploy deploy = mapper.readValue(url, Deploy.class);
-        assertEquals(deploy.getResponse().getResult(), 0);
+        Deploy deploy = read("deploy_ok.json", Deploy.class);
+        assertEquals(0, deploy.getResponse().getResult());
+        assertNotNull(deploy.getResponse().getOut());
     }
 
     @Test
-    public void deploy() throws Exception {
-        String fff = "miltrex-web-1.0.0.war";
-        System.out.println(fff.substring(0,fff.length()-4));
+    public void logOutIgnoresUnknownMembersTest() throws Exception {
+        LogOut logOut = mapper.readValue("{\"result\":0,\"unknown\":\"whatever\"}", LogOut.class);
+        assertEquals(0, logOut.getResult());
     }
-
 }

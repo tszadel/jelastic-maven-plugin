@@ -1,6 +1,7 @@
 package com.jelastic.model;
 
-import org.codehaus.jackson.annotate.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 
 /**
  * User: Igor.Yova@gmail.com
@@ -14,6 +15,7 @@ public class Deploy {
 
     private JelasticResponse response;
     private int result;
+    @JsonDeserialize(using = ErrorMessageDeserializer.class)
     private String error;
     private Debug debug;
 
@@ -31,6 +33,7 @@ public class Deploy {
      public static class JelasticResponse {
         private int result;
         private JelasticResponses[] responses;
+        @JsonDeserialize(using = ErrorMessageDeserializer.class)
         private String error;
         private String out;
 
