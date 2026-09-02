@@ -3,6 +3,7 @@ package com.jelastic.client;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jelastic.model.Authentication;
+import com.jelastic.model.CreateObject;
 import org.apache.http.HttpResponse;
 import org.apache.http.HttpVersion;
 import org.apache.http.entity.ByteArrayEntity;
@@ -61,6 +62,33 @@ public class JsonResponseHandlerTest {
                 ContentType.APPLICATION_JSON);
 
         assertEquals("authentication failed", handle(response, Authentication.class).getError());
+    }
+
+    /**
+     * A gateway answering a JSON body without a Jelastic result would deserialize into a model whose primitive result
+     * defaults to 0, so the HTTP failure would be read as a success.
+     */
+    @Test
+    public void rejectsAJsonBodyOfAnHttpErrorThatCarriesNoJelasticResult() {
+        try {
+            handle(response(401, "{\"error\":\"unauthorized\"}", ContentType.APPLICATION_JSON), Authentication.class);
+            fail("expected a JelasticApiException");
+        } catch (Exception e) {
+            assertTrue(e instanceof JelasticApiException);
+            assertEquals(401, ((JelasticApiException) e).getStatusCode());
+            assertTrue(e.getMessage(), e.getMessage().contains("unauthorized"));
+        }
+    }
+
+    @Test
+    public void keepsTheErrorNestedInTheResponseMemberOfAnHttpError() throws Exception {
+        HttpResponse response = response(500,
+                "{\"result\":0,\"response\":{\"result\":8,\"error\":\"access not permitted\"}}",
+                ContentType.APPLICATION_JSON);
+
+        CreateObject createObject = handle(response, CreateObject.class);
+        assertEquals("access not permitted", createObject.getResponse().getError());
+        assertEquals(8, createObject.getResponse().getResult());
     }
 
     @Test

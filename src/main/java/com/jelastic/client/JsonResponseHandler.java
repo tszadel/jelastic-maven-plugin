@@ -1,6 +1,7 @@
 package com.jelastic.client;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
@@ -52,14 +53,38 @@ class JsonResponseHandler<T> implements ResponseHandler<T> {
             throw new JelasticApiException("Empty answer from the platform", statusCode, null);
         }
 
+        JsonNode tree;
         try {
-            return mapper.readValue(body, type);
+            tree = mapper.readTree(body);
         } catch (JsonProcessingException e) {
             if (statusCode >= 300) {
                 throw new JelasticApiException("Request rejected by the platform", statusCode, body);
             }
             throw new JelasticApiException("Unexpected non JSON answer from the platform", statusCode, body);
         }
+
+        // A JSON body answered with an HTTP error is only trusted when it carries a Jelastic failure the caller can
+        // report. Anything else - a gateway answering {"error":"unauthorized"}, say - would deserialize into a model
+        // whose primitive result silently defaults to 0, and the HTTP failure would be read as a success.
+        if (statusCode >= 300 && !carriesJelasticError(tree)) {
+            throw new JelasticApiException("Request rejected by the platform", statusCode, body);
+        }
+
+        try {
+            return mapper.treeToValue(tree, type);
+        } catch (JsonProcessingException e) {
+            throw new JelasticApiException("Unexpected answer from the platform", statusCode, body);
+        }
+    }
+
+    private boolean carriesJelasticError(JsonNode tree) {
+        return isFailure(tree) || isFailure(tree.path("response"));
+    }
+
+    private boolean isFailure(JsonNode node) {
+        JsonNode result = node.path("result");
+
+        return result.isNumber() && result.asInt() != 0;
     }
 
     private String readBody(HttpEntity entity) throws IOException {
