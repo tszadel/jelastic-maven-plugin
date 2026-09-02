@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.0 (unreleased)
+## 2.0.0
 
 Maintenance release of the fork: the plugin builds and runs on current toolchains again, and it now reports what the
 platform actually answered instead of failing with an unrelated error.
@@ -44,7 +44,12 @@ platform actually answered instead of failing with an unrelated error.
 
 ### Changed
 
-* Requires Java 8 and Maven 3.6.3 (was Java 5 and the Maven 2.2.1 API).
+* **The groupId is now `io.github.tszadel`** (was `com.jelastic`), so that the fork can be published on its own.
+  Update the plugin declaration in your pom accordingly.
+* **Published to GitHub Packages** at `https://maven.pkg.github.com/tszadel/jelastic-maven-plugin`; pushing a `v*` tag
+  builds, publishes and creates the matching GitHub release. Reading a package from GitHub requires an authenticated
+  `settings.xml`, see the README.
+* Requires Java 21 and Maven 3.9 (was Java 5 and the Maven 2.2.1 API).
 * Goals are declared with Maven plugin annotations instead of javadoc tags.
 * Jackson 1.8.1 (`org.codehaus.jackson`, end of life) replaced with Jackson 2.18.2.
 * HttpClient calls migrated off the deprecated `DefaultHttpClient`, `MultipartEntity` and `URIUtils` APIs;

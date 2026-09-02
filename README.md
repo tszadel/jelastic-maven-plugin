@@ -8,8 +8,40 @@ This is a maintained fork of the original, no longer maintained,
 
 ## Requirements
 
-* Java 8 or later
-* Maven 3.6.3 or later
+* Java 21 or later
+* Maven 3.9 or later
+
+The plugin is published to [GitHub Packages](https://github.com/tszadel/jelastic-maven-plugin/packages). GitHub
+requires authentication to read a Maven package, public ones included, so declare the repository and a token in your
+`~/.m2/settings.xml`:
+
+```xml
+<settings>
+    <servers>
+        <server>
+            <id>github-tszadel</id>
+            <username>YOUR_GITHUB_LOGIN</username>
+            <password>YOUR_GITHUB_TOKEN</password> <!-- a classic PAT with read:packages -->
+        </server>
+    </servers>
+
+    <profiles>
+        <profile>
+            <id>github-tszadel</id>
+            <pluginRepositories>
+                <pluginRepository>
+                    <id>github-tszadel</id>
+                    <url>https://maven.pkg.github.com/tszadel/jelastic-maven-plugin</url>
+                </pluginRepository>
+            </pluginRepositories>
+        </profile>
+    </profiles>
+
+    <activeProfiles>
+        <activeProfile>github-tszadel</activeProfile>
+    </activeProfiles>
+</settings>
+```
 
 ## Usage
 
@@ -17,7 +49,7 @@ This is a maintained fork of the original, no longer maintained,
 <build>
     <plugins>
         <plugin>
-            <groupId>com.jelastic</groupId>
+            <groupId>io.github.tszadel</groupId>
             <artifactId>jelastic-maven-plugin</artifactId>
             <version>2.0.0</version>
             <configuration>
@@ -99,6 +131,16 @@ JVM proxy system properties (`https.proxyHost`, ...) are honoured as well.
 
 ```bash
 mvn clean install
+```
+
+## Releasing
+
+Pushing a `v*` tag builds the project, publishes it to GitHub Packages and creates the matching GitHub release:
+
+```bash
+mvn versions:set -DnewVersion=2.1.0   # or edit the pom
+git commit -am "Release 2.1.0" && git push
+git tag v2.1.0 && git push origin v2.1.0
 ```
 
 ## License
