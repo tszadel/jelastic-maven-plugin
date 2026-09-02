@@ -1,81 +1,15 @@
 package com.jelastic;
 
-import com.jelastic.model.Authentication;
-import com.jelastic.model.CreateObject;
-import com.jelastic.model.LogOut;
-import com.jelastic.model.UpLoader;
 import org.apache.maven.plugin.MojoExecutionException;
-import org.apache.maven.plugin.MojoFailureException;
+import org.apache.maven.plugins.annotations.Mojo;
 
 /**
- * Goal which publish artifact to Jelastic Cloud Platform
- *
- * @goal publish
+ * Uploads the artifact to a Jelastic based cloud and registers it in the deployment manager, without deploying it.
  */
+@Mojo(name = "publish", threadSafe = true)
 public class PublishMojo extends JelasticMojo {
-    public void execute() throws MojoExecutionException, MojoFailureException {
-        if (!isWar()) {
-            getLog().info("Skiping publish artifact. Artifact packaging not WAR or EAR or JAR");
-            return;
-        }
 
-        Authentication authentication = authentication();
-        if (authentication.getResult() == 0) {
-            getLog().info("------------------------------------------------------------------------");
-            getLog().info("   Authentication : SUCCESS");
-            getLog().info("          Session : " + authentication.getSession());
-            //getLog().info("              Uid : " + authentication.getUid());
-            getLog().info("------------------------------------------------------------------------");
-
-            UpLoader upLoader = upload(authentication);
-            if (upLoader.getResult() == 0) {
-                getLog().info("      File UpLoad : SUCCESS");
-                getLog().info("         File URL : " + upLoader.getFile());
-                getLog().info("        File size : " + upLoader.getSize());
-                getLog().info("------------------------------------------------------------------------");
-
-                CreateObject createObject = createObject(upLoader, authentication);
-                if (createObject.getResult() == 0 && createObject.getResponse().getResult() == 0) {
-                    getLog().info("File registration : SUCCESS");
-                    getLog().info("  Registration ID : " + createObject.getResponse().getObject().getId());
-                    getLog().info("     Developer ID : " + createObject.getResponse().getObject().getDeveloper());
-                    getLog().info("------------------------------------------------------------------------");
-
-                    if (System.getProperty("jelastic-session") == null) {
-                        LogOut logOut = logOut(authentication);
-                        if (logOut.getResult() == 0) {
-                            getLog().info("           LogOut : SUCCESS");
-                        } else {
-                            getLog().info("LogOut : FAILED");
-                            getLog().error("Error : " + logOut.getError());
-
-                            throw new MojoExecutionException(logOut.getError());
-                        }
-                    }
-                } else {
-                    if (createObject.getResult() != 0) {
-                        getLog().error("Create object : FAILED");
-                        getLog().error("      Error : " + createObject.getError());
-
-                        throw new MojoExecutionException(createObject.getError());
-                    } else if (createObject.getResponse().getResult() != 0) {
-                        getLog().error("Create object : FAILED");
-                        getLog().error("Internal error : " + createObject.getResponse().getError());
-
-                        throw new MojoExecutionException(createObject.getResponse().getError());
-                    }
-                }
-            } else {
-                getLog().error("File upload : FAILED");
-                getLog().error("      Error : " + upLoader.getError());
-
-                throw new MojoExecutionException(upLoader.getError());
-            }
-        } else {
-            getLog().error("Authentication : FAILED");
-            getLog().error("         Error : " + authentication.getError());
-
-            throw new MojoExecutionException(authentication.getError());
-        }
+    public void execute() throws MojoExecutionException {
+        run(false);
     }
 }

@@ -1,0 +1,56 @@
+# Changelog
+
+## 2.0.0 (unreleased)
+
+Maintenance release of the fork: the plugin builds and runs on current toolchains again, and it now reports what the
+platform actually answered instead of failing with an unrelated error.
+
+### Fixed
+
+* **API errors are no longer swallowed.** Every call used to catch `IOException`, log it and return `null`, so the real
+  failure surfaced later as a `NullPointerException`. Failures now fail the build with the message returned by the
+  platform.
+* **Non JSON answers are reported as such.** An HTML error page or a plain text message coming from a gateway or a
+  reverse proxy (Infomaniak, nginx, a corporate proxy) is summarised in the error message together with the HTTP status
+  code, instead of breaking the JSON parsing.
+* **Structured errors are supported.** `error` members returned as an object (`{"code":401,"message":"..."}`) or as a
+  list — which some hosters do — are rendered as a readable message instead of breaking the deserialization.
+* **Error bodies of 4xx/5xx answers are read.** `BasicResponseHandler` used to throw the body away; the JSON error
+  payload carried by an HTTP error is now parsed and reported.
+* **Null responses no longer crash.** A failed deployment or registration returns `"response":null`; reading it used to
+  throw a `NullPointerException` and hide the actual error.
+* **A failed sign in is no longer reported as a success.** A network failure during authentication returned an empty
+  object whose `result` was `0`, and the build carried on with a null session.
+* **UTF-8 everywhere.**
+  * The archive description is serialized with Jackson instead of being concatenated by hand: a project description
+    holding a quote, an apostrophe, a backslash or an accented character used to produce an invalid JSON payload.
+  * Response bodies are decoded with the charset advertised by the server and fall back to UTF-8, never to the platform
+    default charset.
+  * The multipart upload declares UTF-8, so artifact names holding non ASCII characters are transmitted correctly.
+  * Deploy hook files and the `jelastic-properties` file are read as UTF-8.
+* **Sign out endpoint fixed**: it was missing the `/1.0` API version prefix and always failed.
+* **The `<comment>` parameter is now used.** It was declared but never read; only the `jelastic-comment` system property
+  was.
+* **Proxy selection fixed**: the first proxy of `settings.xml` was returned whether it was active or not, and
+  `nonProxyHosts` was ignored.
+* Deploy output no longer assumes a single node response.
+* Clean up of obsolete archives no longer runs in a fire and forget thread that could outlive the build.
+
+### Security
+
+* **TLS certificates are validated again.** The plugin used to trust every certificate and accept any hostname, which
+  exposed the credentials and the session to interception. Set `<trustAllCertificates>true</trustAllCertificates>` to
+  restore the previous behaviour on a private platform using a self signed certificate.
+
+### Changed
+
+* Requires Java 8 and Maven 3.6.3 (was Java 5 and the Maven 2.2.1 API).
+* Goals are declared with Maven plugin annotations instead of javadoc tags.
+* Jackson 1.8.1 (`org.codehaus.jackson`, end of life) replaced with Jackson 2.18.2.
+* HttpClient calls migrated off the deprecated `DefaultHttpClient`, `MultipartEntity` and `URIUtils` APIs;
+  `commons-fileupload` and `plexus-utils`, which were not used, are gone.
+* Connection and read timeouts are configurable; requests no longer hang forever.
+* Upload progress is logged every 10% instead of every 1%.
+* New `skip`, `uploadOnly`, `trustAllCertificates`, `connectTimeoutSeconds` and `socketTimeoutSeconds` parameters, plus
+  `jelastic.*` user properties for the existing ones.
+* Release profile publishes through Sonatype Central; `oss.sonatype.org` has been retired.

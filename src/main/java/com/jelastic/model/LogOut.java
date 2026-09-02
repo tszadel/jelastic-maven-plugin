@@ -1,7 +1,13 @@
 package com.jelastic.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class LogOut {
     private int result;
+
+    @JsonDeserialize(using = ErrorMessageDeserializer.class)
     private String error;
     private Debug debug;
 
