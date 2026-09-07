@@ -153,13 +153,30 @@ mvn clean install
 
 ## Releasing
 
-Pushing a `v*` tag builds the project, publishes it to GitHub Packages and creates the matching GitHub release:
+**The version in the pom is the whole decision.** A merge to `master` publishes it to GitHub Packages, tags the
+published commit `v<version>` and creates the matching GitHub release:
 
 ```bash
 mvn versions:set -DnewVersion=2.1.0   # or edit the pom
-git commit -am "Release 2.1.0" && git push
-git tag v2.1.0 && git push origin v2.1.0
+# open a pull request, and merge it
 ```
+
+A merge whose version is already published — a README, a test — releases nothing: the job says so and stops. Bumping
+the pom is what asks for a release, and it is reviewed like the rest of the change.
+
+The tag no longer triggers the release, it **attests** it: it is pushed after the artifact reached the registry, on the
+commit that produced it.
+
+What decides is the **registry**, not the tag, and that makes re-running always safe:
+
+| in the registry | tagged | what the job does |
+|---|---|---|
+| yes | yes | nothing, and says why |
+| yes | no | pushes the tag, without rebuilding |
+| no | — | publishes, then tags |
+
+So a run that published but failed to tag is repaired by re-running it from the Actions tab (`workflow_dispatch`), with
+no risk of attempting a second publish of an immutable version.
 
 ## License
 
