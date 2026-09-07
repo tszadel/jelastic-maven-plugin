@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.0.3
+
+### Fixed
+
+* **An `artifact` set to the artifactId no longer fails the build.** 2.0.2 turned « named artifact not found » into a
+  failure, and read the name as a file name only. A shared configuration that sets `artifact` to `${project.artifactId}`
+  — `ts-edl`, while the file on disk is `ts-edl-0.0.1.jar` — matched nothing, so **every deployment using it stopped**.
+  Regression introduced in 2.0.2 and caught before any of those deployments ran on it.
+
+  A name that is not a file name is now matched as a **prefix** and merely narrows the candidates; the usual rules pick
+  among what remains, so a project with an `exec` sibling still deploys the executable one. A name that matches nothing
+  at all remains a failure — that is the typo the 2.0.2 change was written for.
+
 ## 2.0.2
 
 ### Fixed

@@ -90,15 +90,15 @@ public class ChooseArtifactTest {
      * in that name then put an unintended jar online — the warning scrolling past in a green CI log.
      */
     @Test
-    public void aNamedArtifactThatIsMissingIsAnError() throws Exception {
+    public void aNamedArtifactThatMatchesNothingIsAnError() throws Exception {
         File other = artifact("ts-edl-0.0.1-exec.jar", 900);
 
         try {
             JelasticMojo.chooseArtifact(target.getRoot(), Collections.singletonList(other),
-                    Collections.singletonList(other), "ts-edl-0.0.2.jar");
+                    Collections.singletonList(other), "ts-lawyer");
             fail("a missing named artifact must stop the deployment");
         } catch (MojoExecutionException expected) {
-            assertTrue(expected.getMessage(), expected.getMessage().contains("ts-edl-0.0.2.jar"));
+            assertTrue(expected.getMessage(), expected.getMessage().contains("ts-lawyer"));
         }
     }
 
@@ -130,6 +130,45 @@ public class ChooseArtifactTest {
                 Arrays.asList(stranger, application), outputs, null));
     }
 
+
+    /**
+     * The case a whole fleet depends on: the shared configuration sets {@code artifact} to the {@code artifactId},
+     * while the file on disk carries the version and the extension. Reading that as « not found » would fail every
+     * one of those deployments — which is exactly what the first cut of this method did.
+     */
+    @Test
+    public void anArtifactIdMatchesTheVersionedFile() throws Exception {
+        File jar = artifact("ts-edl-0.0.1.jar", 900);
+
+        File chosen = JelasticMojo.chooseArtifact(target.getRoot(), Collections.singletonList(jar),
+                Collections.singletonList(jar), "ts-edl");
+
+        assertEquals(jar, chosen);
+    }
+
+    /** And it still narrows rather than decides: among the siblings it matches, the executable one wins. */
+    @Test
+    public void anArtifactIdStillLetsTheExecutableSiblingWin() throws Exception {
+        File plain = artifact("ts-edl-0.0.1.jar", 300);
+        File executable = artifact("ts-edl-0.0.1-exec.jar", 900);
+
+        File chosen = JelasticMojo.chooseArtifact(target.getRoot(), Arrays.asList(plain, executable),
+                Arrays.asList(plain, executable), "ts-edl");
+
+        assertEquals(executable, chosen);
+    }
+
+    /** A prefix is not a licence to deploy a stranger: it narrows the candidates, the produced ones still win. */
+    @Test
+    public void aPrefixDoesNotLetAStrangerThrough() throws Exception {
+        File application = artifact("ts-edl-0.0.1.jar", 300);
+        File stranger = artifact("ts-edl-vendor-bundle.jar", 900);
+
+        File chosen = JelasticMojo.chooseArtifact(target.getRoot(), Arrays.asList(application, stranger),
+                Collections.singletonList(application), "ts-edl");
+
+        assertEquals(application, chosen);
+    }
     private File artifact(String name, int bytes) throws Exception {
         File file = new File(target.getRoot(), name);
         OutputStream out = new FileOutputStream(file);

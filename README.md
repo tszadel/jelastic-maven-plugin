@@ -106,8 +106,10 @@ candidate, however big it is.
 When a build produces several deployable artifacts — a plain jar and its `exec` sibling, typically — the **bigger**
 one wins: it is the one that bundles its dependencies, and the only one that runs.
 
-Set `artifact` to name a file explicitly. A name that matches nothing **fails the build**: deploying something else
-instead would put code online that nobody asked for.
+Set `artifact` to pick one explicitly. It is matched as a file name first, then as a **prefix** — so `ts-edl` finds
+`ts-edl-0.0.1.jar`, which is what a shared configuration setting `artifact` to the `artifactId` needs — and it narrows
+the candidates rather than deciding alone: among the files it matches, the rules above still apply. A name that matches
+nothing **fails the build**: deploying something else instead would put code online that nobody asked for.
 
 Credentials are best kept out of the pom:
 

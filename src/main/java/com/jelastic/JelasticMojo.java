@@ -539,10 +539,16 @@ public abstract class JelasticMojo extends AbstractMojo {
      * remains the tie-break, now applied between siblings of the same build rather than between a build output and
      * whatever else sits in the directory.</p>
      *
-     * <h2>A named artifact that is missing is an error</h2>
+     * <h2>A named artifact narrows the field, and a name that matches nothing is an error</h2>
      * <p>It used to warn and deploy the biggest file instead. Someone who names an artifact has a reason to; a typo in
      * that name then put an unintended jar online, and the warning scrolled past in a CI log nobody reads when the
      * build is green. Failing costs a red build and a one-line fix.</p>
+     *
+     * <p>But a name is not always a file name. The shared configuration of a whole fleet may set {@code artifact} to
+     * the {@code artifactId} — {@code ts-edl} — while the file on disk carries the version and the extension:
+     * {@code ts-edl-0.0.1.jar}. Treating that as « not found » would fail every one of those deployments, which is why
+     * a name that is not a file name is matched as a <b>prefix</b> and merely narrows the candidates; the usual rules
+     * then pick among what remains, so a project with an {@code exec} sibling still deploys the executable one.</p>
      *
      * @param outputDirectory the directory being scanned, for the error messages
      * @param candidates      every deployable-looking file found there, in listing order
@@ -551,28 +557,18 @@ public abstract class JelasticMojo extends AbstractMojo {
      */
     static File chooseArtifact(File outputDirectory, List<File> candidates, List<File> buildOutputs,
                                String requested) throws MojoExecutionException {
+        List<File> named = candidates;
         if (isNotEmpty(requested)) {
-            for (File candidate : candidates) {
-                if (candidate.getName().equals(requested)) {
-                    return candidate;
-                }
-            }
-            File named = new File(outputDirectory, requested);
-            if (named.isFile()) {
-                return named;
-            }
-            throw new MojoExecutionException("Artifact [" + requested + "] not found in [" + outputDirectory
-                    + "]. Deploying another one would put code online that nobody asked for: fix the name, or drop it"
-                    + " to let the build decide.");
+            named = matching(outputDirectory, candidates, requested);
         }
 
         List<File> preferred = new ArrayList<File>();
-        for (File candidate : candidates) {
+        for (File candidate : named) {
             if (contains(buildOutputs, candidate)) {
                 preferred.add(candidate);
             }
         }
-        List<File> retained = preferred.isEmpty() ? candidates : preferred;
+        List<File> retained = preferred.isEmpty() ? named : preferred;
 
         List<File> sorted = new ArrayList<File>(retained);
         Collections.sort(sorted, new Comparator<File>() {
@@ -582,6 +578,42 @@ public abstract class JelasticMojo extends AbstractMojo {
         });
 
         return sorted.get(0);
+    }
+
+    /**
+     * The candidates that answer to the requested name.
+     *
+     * <p>Three rungs, from the most explicit to the most tolerant: the exact file name, a file that exists on disk
+     * under that name (it may be a type the listing filter does not keep, or a path written by hand), then every
+     * candidate whose name starts with it — the {@code artifactId} case. Nothing matching is a failure: the name was
+     * written on purpose, and deploying something else is how an unintended jar goes online.</p>
+     */
+    private static List<File> matching(File outputDirectory, List<File> candidates, String requested)
+            throws MojoExecutionException {
+        for (File candidate : candidates) {
+            if (candidate.getName().equals(requested)) {
+                return Collections.singletonList(candidate);
+            }
+        }
+
+        File onDisk = new File(outputDirectory, requested);
+        if (onDisk.isFile()) {
+            return Collections.singletonList(onDisk);
+        }
+
+        List<File> prefixed = new ArrayList<File>();
+        for (File candidate : candidates) {
+            if (candidate.getName().startsWith(requested)) {
+                prefixed.add(candidate);
+            }
+        }
+        if (!prefixed.isEmpty()) {
+            return prefixed;
+        }
+
+        throw new MojoExecutionException("No artifact matching [" + requested + "] in [" + outputDirectory
+                + "]. Deploying another one would put code online that nobody asked for: fix the name, or drop it"
+                + " to let the build decide.");
     }
 
     /** Same file, whatever the path was spelled like — {@code target/x.jar} and an absolute path are one file. */
