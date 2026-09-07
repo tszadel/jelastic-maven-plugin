@@ -96,6 +96,19 @@ mvn jelastic:help -Ddetail=true  # list every parameter
 | `connectTimeoutSeconds`| `jelastic.connectTimeoutSeconds`  | `30`               | Connection timeout                                                  |
 | `socketTimeoutSeconds` | `jelastic.socketTimeoutSeconds`   | `300`              | Read timeout, between two blocks of data                            |
 
+### Which artifact is uploaded
+
+The plugin uploads the artifact **this build produced** — the main one, or the executable jar when a Spring Boot
+project attaches one with a classifier. `target/` also holds whatever else a build writes there (dependencies copied
+by `maven-dependency-plugin`, a shaded test jar, a leftover under a previous `finalName`), and none of those is a
+candidate, however big it is.
+
+When a build produces several deployable artifacts — a plain jar and its `exec` sibling, typically — the **bigger**
+one wins: it is the one that bundles its dependencies, and the only one that runs.
+
+Set `artifact` to name a file explicitly. A name that matches nothing **fails the build**: deploying something else
+instead would put code online that nobody asked for.
+
 Credentials are best kept out of the pom:
 
 ```bash
