@@ -106,8 +106,13 @@ candidate, however big it is.
 When a build produces several deployable artifacts — a plain jar and its `exec` sibling, typically — the **bigger**
 one wins: it is the one that bundles its dependencies, and the only one that runs.
 
-Set `artifact` to name a file explicitly. A name that matches nothing **fails the build**: deploying something else
-instead would put code online that nobody asked for.
+Set `artifact` to pick one explicitly. An **exact** file name is honoured as such, whatever it is. Otherwise the name
+is read as an artifactId and matched on the boundary Maven writes — `ts-edl` finds `ts-edl-0.0.1.jar` and `ts-edl.jar`,
+while `api` leaves `api-client-1.0.jar` alone — and it narrows the candidates rather than deciding alone: among the
+files it matches, the rules above still apply.
+
+A name that matches nothing, or that matches only files this build did not produce, **fails the build**: deploying
+something else instead would put code online that nobody asked for.
 
 Credentials are best kept out of the pom:
 
