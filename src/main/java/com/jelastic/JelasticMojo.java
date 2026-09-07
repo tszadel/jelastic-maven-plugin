@@ -1,6 +1,7 @@
 package com.jelastic;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jelastic.client.BoundaryOnlyContentType;
 import com.jelastic.client.JelasticClient;
 import com.jelastic.client.ProgressHttpEntity;
 import com.jelastic.model.Archive;
@@ -369,20 +370,48 @@ public abstract class JelasticMojo extends AbstractMojo {
         return authentication;
     }
 
+
+    /**
+     * Builds the multipart body of the upload request.
+     *
+     * <p>The part headers are written in UTF-8 so that an artifact name holding non ASCII characters survives the
+     * trip, but the resulting {@code Content-Type} advertises the boundary and <b>nothing else</b>. That second half
+     * is not cosmetic. {@code MultipartEntityBuilder.setCharset} appends the charset as a second parameter, after the
+     * boundary:</p>
+     *
+     * <pre>multipart/form-data; boundary=BTDqPv9a1viO6ve; charset=UTF-8</pre>
+     *
+     * <p>which is valid HTTP, and which the Jelastic uploader reads as a boundary named
+     * {@code BTDqPv9a1viO6ve; charset=UTF-8}. It then looks for that string in the body, never finds it, and answers
+     * with its own crash rather than a message:</p>
+     *
+     * <pre>result=99, error=java.lang.StringIndexOutOfBoundsException: start 0, end -1, length 4293</pre>
+     *
+     * <p>The upload is the very first call of a deployment, so the whole chain stops there — with an error naming
+     * neither the plugin, nor the charset, nor the request. Observed on app.jpe.infomaniak.com in September 2026,
+     * on three consecutive deployments of a project that had switched from 1.9.5 to this fork; 1.9.5 sent no charset
+     * and kept working on the same platform, the same day, with the same token.</p>
+     */
+    static HttpEntity uploadBody(File artifactFile, String session) {
+        ContentType textType = ContentType.create("text/plain", StandardCharsets.UTF_8);
+        HttpEntity multipart = MultipartEntityBuilder.create()
+                .setMode(HttpMultipartMode.BROWSER_COMPATIBLE)
+                .setCharset(StandardCharsets.UTF_8)
+                .addTextBody("fid", "123456", textType)
+                .addTextBody("session", session, textType)
+                .addBinaryBody("file", artifactFile, ContentType.APPLICATION_OCTET_STREAM, artifactFile.getName())
+                .build();
+
+        return new BoundaryOnlyContentType(multipart);
+    }
+
     public UpLoader upload(JelasticClient client, Authentication authentication) throws MojoExecutionException {
         artifactFile = selectArtifact();
 
         getLog().info("File Uploading Progress :");
         lastReportedProgress = -PROGRESS_STEP;
 
-        ContentType textType = ContentType.create("text/plain", StandardCharsets.UTF_8);
-        HttpEntity multipart = MultipartEntityBuilder.create()
-                .setMode(HttpMultipartMode.BROWSER_COMPATIBLE)
-                .setCharset(StandardCharsets.UTF_8)
-                .addTextBody("fid", "123456", textType)
-                .addTextBody("session", authentication.getSession(), textType)
-                .addBinaryBody("file", artifactFile, ContentType.APPLICATION_OCTET_STREAM, artifactFile.getName())
-                .build();
+        HttpEntity multipart = uploadBody(artifactFile, authentication.getSession());
 
         totalSize = multipart.getContentLength();
 

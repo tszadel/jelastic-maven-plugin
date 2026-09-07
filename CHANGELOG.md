@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.0.1
+
+### Fixed
+
+* **The upload no longer announces a charset the platform reads as part of the boundary.** `MultipartEntityBuilder`
+  appends the charset *after* the boundary — `multipart/form-data; boundary=BTDqPv9a1viO6ve; charset=UTF-8` — and a
+  parser that takes everything after `boundary=` then looks for a separator that was never written. The Jelastic
+  uploader of app.jpe.infomaniak.com is one of those; it answered `result=99` with its own
+  `StringIndexOutOfBoundsException: start 0, end -1, length 4293`, on the very first call of the deployment, naming
+  neither the plugin nor the request. 1.9.5 sent no charset and kept working on the same platform, the same day, with
+  the same token — this regression came in with 2.0.0.
+
+  The part headers are still written in UTF-8, so an artifact name holding non ASCII characters still survives the
+  trip: only the header is trimmed back to the boundary, exactly as a browser sends it.
+
 ## 2.0.0
 
 Maintenance release of the fork: the plugin builds and runs on current toolchains again, and it now reports what the
