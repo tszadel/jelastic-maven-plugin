@@ -169,6 +169,61 @@ public class ChooseArtifactTest {
 
         assertEquals(application, chosen);
     }
+
+    /**
+     * A `finalName` changed mid-life leaves the previous jar in `target/`, and it still carries the artifactId.
+     * Maven said what it produced; nothing bearing the requested name is in it, so there is no honest choice left.
+     */
+    @Test
+    public void aStaleJarBearingTheNameIsNotDeployed() throws Exception {
+        File stale = artifact("ts-edl-0.0.1.jar", 900);
+        File produced = artifact("service.jar", 300);
+
+        try {
+            JelasticMojo.chooseArtifact(target.getRoot(), Arrays.asList(stale, produced),
+                    Collections.singletonList(produced), "ts-edl");
+            fail("a file this build did not produce must not be deployed");
+        } catch (MojoExecutionException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage().contains("ts-edl"));
+        }
+    }
+
+    /** A truncated name is a typo, not a prefix: the boundary Maven writes must follow it. */
+    @Test
+    public void aTruncatedNameMatchesNothing() throws Exception {
+        File jar = artifact("ts-edl-0.0.1.jar", 900);
+
+        try {
+            JelasticMojo.chooseArtifact(target.getRoot(), Collections.singletonList(jar),
+                    Collections.singletonList(jar), "ts-ed");
+            fail("« ts-ed » is not « ts-edl »");
+        } catch (MojoExecutionException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage().contains("ts-ed"));
+        }
+    }
+
+    /** Two artifacts of the same reactor: `api` must not swallow `api-client`. */
+    @Test
+    public void aSiblingArtifactIdIsNotSwallowed() throws Exception {
+        File api = artifact("api-1.0.jar", 300);
+        File client = artifact("api-client-1.0.jar", 900);
+
+        File chosen = JelasticMojo.chooseArtifact(target.getRoot(), Arrays.asList(api, client),
+                Arrays.asList(api, client), "api");
+
+        assertEquals(api, chosen);
+    }
+
+    /** A `finalName` without version: the name is followed by the extension, and that is a boundary too. */
+    @Test
+    public void aFinalNameWithoutVersionMatches() throws Exception {
+        File jar = artifact("ts-edl.jar", 900);
+
+        File chosen = JelasticMojo.chooseArtifact(target.getRoot(), Collections.singletonList(jar),
+                Collections.singletonList(jar), "ts-edl");
+
+        assertEquals(jar, chosen);
+    }
     private File artifact(String name, int bytes) throws Exception {
         File file = new File(target.getRoot(), name);
         OutputStream out = new FileOutputStream(file);

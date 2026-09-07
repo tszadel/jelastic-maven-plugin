@@ -9,9 +9,14 @@
   — `ts-edl`, while the file on disk is `ts-edl-0.0.1.jar` — matched nothing, so **every deployment using it stopped**.
   Regression introduced in 2.0.2 and caught before any of those deployments ran on it.
 
-  A name that is not a file name is now matched as a **prefix** and merely narrows the candidates; the usual rules pick
-  among what remains, so a project with an `exec` sibling still deploys the executable one. A name that matches nothing
-  at all remains a failure — that is the typo the 2.0.2 change was written for.
+  A name that is not a file name is now matched on the boundary Maven itself writes — the name followed by `.`, or by
+  `-` and a digit — and it merely narrows the candidates; the usual rules pick among what remains, so a project with an
+  `exec` sibling still deploys the executable one. `api` therefore does not swallow `api-client-1.0.jar`, and a
+  truncated `ts-ed` matches nothing, which is the typo the 2.0.2 change was written for.
+
+  Once Maven has said what it produced, the choice stays inside it: a name that matches only files left by an earlier
+  build — a changed `finalName` leaves the previous jar in `target/`, still carrying the artifactId — is a failure, not
+  a licence to upload the stale one. An **exact** file name remains honoured as the deliberate designation it is.
 
 ## 2.0.2
 

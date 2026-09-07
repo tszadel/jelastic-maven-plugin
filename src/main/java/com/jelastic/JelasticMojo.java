@@ -557,10 +557,14 @@ public abstract class JelasticMojo extends AbstractMojo {
      */
     static File chooseArtifact(File outputDirectory, List<File> candidates, List<File> buildOutputs,
                                String requested) throws MojoExecutionException {
-        List<File> named = candidates;
         if (isNotEmpty(requested)) {
-            named = matching(outputDirectory, candidates, requested);
+            File designated = designated(outputDirectory, candidates, requested);
+            if (designated != null) {
+                return designated;
+            }
         }
+
+        List<File> named = isNotEmpty(requested) ? bearing(candidates, requested) : candidates;
 
         List<File> preferred = new ArrayList<File>();
         for (File candidate : named) {
@@ -568,6 +572,21 @@ public abstract class JelasticMojo extends AbstractMojo {
                 preferred.add(candidate);
             }
         }
+
+        if (preferred.isEmpty() && !buildOutputs.isEmpty()) {
+            // Maven a dit ce qu'il a produit, et rien de ce que le nom désigne n'en fait partie :
+            // le seul choix restant serait un fichier que ce build n'a pas écrit. Un `finalName`
+            // changé laisse justement l'ancien jar dans target/, et il porte encore l'artifactId.
+            throw new MojoExecutionException("No artifact produced by this build matches ["
+                    + requested + "] in [" + outputDirectory + "]. The files left there by an earlier"
+                    + " build are not candidates: rebuild, or name the artifact exactly.");
+        }
+        if (named.isEmpty()) {
+            throw new MojoExecutionException("No artifact matching [" + requested + "] in ["
+                    + outputDirectory + "]. Deploying another one would put code online that nobody"
+                    + " asked for: fix the name, or drop it to let the build decide.");
+        }
+
         List<File> retained = preferred.isEmpty() ? named : preferred;
 
         List<File> sorted = new ArrayList<File>(retained);
@@ -581,39 +600,52 @@ public abstract class JelasticMojo extends AbstractMojo {
     }
 
     /**
-     * The candidates that answer to the requested name.
+     * The file the caller designated by name, or {@code null} when the name is not a file name.
      *
-     * <p>Three rungs, from the most explicit to the most tolerant: the exact file name, a file that exists on disk
-     * under that name (it may be a type the listing filter does not keep, or a path written by hand), then every
-     * candidate whose name starts with it — the {@code artifactId} case. Nothing matching is a failure: the name was
-     * written on purpose, and deploying something else is how an unintended jar goes online.</p>
+     * <p>An exact name is a deliberate designation and is honoured as such — including a file the listing filter
+     * does not keep, a {@code .zip} or a path written by hand. It is the escape hatch for everything the rules
+     * below would not pick on their own.</p>
      */
-    private static List<File> matching(File outputDirectory, List<File> candidates, String requested)
-            throws MojoExecutionException {
+    private static File designated(File outputDirectory, List<File> candidates, String requested) {
         for (File candidate : candidates) {
             if (candidate.getName().equals(requested)) {
-                return Collections.singletonList(candidate);
+                return candidate;
             }
         }
-
         File onDisk = new File(outputDirectory, requested);
-        if (onDisk.isFile()) {
-            return Collections.singletonList(onDisk);
-        }
+        return onDisk.isFile() ? onDisk : null;
+    }
 
-        List<File> prefixed = new ArrayList<File>();
+    /**
+     * The candidates whose file name is built on the requested name.
+     *
+     * <h2>Why a prefix, and why not any prefix</h2>
+     * <p>The shared configuration of a whole fleet sets {@code artifact} to the {@code artifactId} — {@code ts-edl} —
+     * while the file carries the version and the extension: {@code ts-edl-0.0.1.jar}. Reading that as a file name
+     * matches nothing and fails every one of those deployments.</p>
+     *
+     * <p>But a bare prefix is too loose: {@code ts-ed} would match {@code ts-edl-0.0.1.jar}, and {@code api} would
+     * swallow {@code api-client-1.0.jar} — a different artifact of the same reactor. What is required is the boundary
+     * Maven itself writes: the name is followed by {@code .} (a {@code finalName} without version) or by {@code -}
+     * and a digit (the start of a version). {@code api-client} keeps its own identity, and a truncated name matches
+     * nothing — which is the failure this was written for.</p>
+     */
+    private static List<File> bearing(List<File> candidates, String requested) {
+        List<File> bearing = new ArrayList<File>();
         for (File candidate : candidates) {
-            if (candidate.getName().startsWith(requested)) {
-                prefixed.add(candidate);
+            String name = candidate.getName();
+            if (!name.startsWith(requested) || name.length() == requested.length()) {
+                continue;
+            }
+            char boundary = name.charAt(requested.length());
+            if (boundary == '.') {
+                bearing.add(candidate);
+            } else if (boundary == '-' && name.length() > requested.length() + 1
+                    && Character.isDigit(name.charAt(requested.length() + 1))) {
+                bearing.add(candidate);
             }
         }
-        if (!prefixed.isEmpty()) {
-            return prefixed;
-        }
-
-        throw new MojoExecutionException("No artifact matching [" + requested + "] in [" + outputDirectory
-                + "]. Deploying another one would put code online that nobody asked for: fix the name, or drop it"
-                + " to let the build decide.");
+        return bearing;
     }
 
     /** Same file, whatever the path was spelled like — {@code target/x.jar} and an absolute path are one file. */
