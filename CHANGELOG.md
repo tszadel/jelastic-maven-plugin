@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.0.2
+
+### Fixed
+
+* **The artifact to upload is the one the build produced, not the biggest file lying in `target/`.** Selection had a
+  single criterion — size — and `target/` is a scratch directory, not a manifest: dependencies copied there by
+  `maven-dependency-plugin`, a shaded test jar, a leftover from a previous `finalName`, anything bigger than the
+  application won. The deployment then succeeded while putting the wrong code online, and nothing said so, because the
+  log only ever printed the winner.
+
+  Candidates are now the files Maven attached to the project. Size remains the tie-break **between siblings of the same
+  build**, which is what a Spring Boot project configured with `<classifier>exec</classifier>` needs: the plain jar and
+  the executable one are both legitimate, and only the bigger one runs. A project deploying in an invocation of its own
+  (`mvn jelastic:deploy` without `package`) has no attached file, and keeps the previous behaviour.
+
+### Changed
+
+* **A named `artifact` that does not exist now fails the build.** It used to warn and upload the biggest file instead.
+  Someone who names an artifact has a reason to; a typo in that name put an unintended jar online, with the warning
+  scrolling past in a CI log nobody reads when the build is green.
+
 ## 2.0.1
 
 ### Fixed

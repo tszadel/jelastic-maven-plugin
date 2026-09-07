@@ -15,6 +15,7 @@ import org.apache.http.HttpEntity;
 import org.apache.http.entity.ContentType;
 import org.apache.http.entity.mime.HttpMultipartMode;
 import org.apache.http.entity.mime.MultipartEntityBuilder;
+import org.apache.maven.artifact.Artifact;
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
@@ -55,6 +56,10 @@ public abstract class JelasticMojo extends AbstractMojo {
     private static final String WAR_TYPE = "war";
     private static final String EAR_TYPE = "ear";
     private static final String JAR_TYPE = "jar";
+
+    /** Attached artifacts nobody deploys — they are outputs of the build all the same. */
+    private static final List<String> COMPANION_CLASSIFIERS =
+            Arrays.asList("sources", "javadoc", "tests", "test-sources", "test-javadoc");
 
     private static final String HTTP_PROTOCOL = "http";
     private static final String HTTPS_PROTOCOL = "https";
@@ -465,33 +470,12 @@ public abstract class JelasticMojo extends AbstractMojo {
                     + "]: build the project before deploying it.");
         }
 
-        //The biggest is the first
-        List<File> fileList = new ArrayList<File>(Arrays.asList(files));
-        Collections.sort(fileList, new Comparator<File>() {
-            public int compare(File left, File right) {
-                return Long.valueOf(right.length()).compareTo(left.length());
-            }
-        });
-
-        File selected = null;
-        String customArtifactName = getCustomArtifactName();
-        if (isNotEmpty(customArtifactName)) {
-            File custom = new File(outputDirectory, customArtifactName);
-            getLog().debug("Custom artifact path: " + custom);
-            if (custom.exists()) {
-                selected = custom;
-            } else {
-                getLog().warn("Artifact [" + customArtifactName + "] not found in [" + outputDirectory
-                        + "], falling back on the biggest artifact of the directory.");
-            }
-        }
-
-        if (selected == null) {
-            selected = fileList.get(0);
-        }
+        List<File> candidates = new ArrayList<File>(Arrays.asList(files));
+        File selected = chooseArtifact(outputDirectory, candidates, deployableOutputs(),
+                getCustomArtifactName());
 
         getLog().debug("Found artifacts:");
-        for (File file : fileList) {
+        for (File file : candidates) {
             getLog().debug("\t" + (selected.getName().equals(file.getName()) ? "(*) " : "  * ")
                     + file.getName() + " - " + file.length());
         }
@@ -499,6 +483,115 @@ public abstract class JelasticMojo extends AbstractMojo {
         getLog().info("Selected artifact: " + selected.getAbsolutePath());
 
         return selected;
+    }
+
+    /**
+     * The files this build actually produced and that make sense to deploy.
+     *
+     * <p>The main artifact plus the attached ones, minus the companions nobody deploys: sources, javadoc and test
+     * jars. Empty when {@code deploy} runs in an invocation of its own — {@code mvn jelastic:deploy} without
+     * {@code package} — because Maven has then attached no file to the project.</p>
+     */
+    private List<File> deployableOutputs() {
+        List<File> outputs = new ArrayList<File>();
+        if (project == null) {
+            return outputs;
+        }
+
+        List<Artifact> artifacts = new ArrayList<Artifact>();
+        if (project.getArtifact() != null) {
+            artifacts.add(project.getArtifact());
+        }
+        if (project.getAttachedArtifacts() != null) {
+            artifacts.addAll(project.getAttachedArtifacts());
+        }
+
+        for (Artifact artifact : artifacts) {
+            String classifier = artifact.getClassifier();
+            if (COMPANION_CLASSIFIERS.contains(classifier)) {
+                continue;
+            }
+            if (artifact.getFile() != null && artifact.getFile().isFile()) {
+                outputs.add(artifact.getFile());
+            }
+        }
+
+        return outputs;
+    }
+
+    /**
+     * Picks the artifact to upload.
+     *
+     * <h2>What was wrong with « the biggest file of the directory »</h2>
+     * <p>Size was the only criterion, and it works right up to the day it does not: {@code target/} is a scratch
+     * directory, not a manifest. A {@code copy-dependencies} execution, a shaded test jar, a leftover from a previous
+     * build under another {@code finalName} — anything bigger than the application wins, and the deployment succeeds
+     * while putting the wrong code online. Nothing in the log says so, because the log only ever printed the winner.</p>
+     *
+     * <p>Selection now starts from what Maven <b>produced</b> — the main artifact and its attached ones — and falls
+     * back on the directory listing only when the project carries no attached file, which is what happens when
+     * {@code jelastic:deploy} runs in an invocation of its own.</p>
+     *
+     * <h2>Size still decides, and on purpose</h2>
+     * <p>A Spring Boot project configured with {@code <classifier>exec</classifier>} produces two jars: the plain
+     * library jar, and the executable one that bundles every dependency. Both are artifacts of the build, both are
+     * legitimately named, and only the second one runs. The bigger of the two <b>is</b> the executable one — so size
+     * remains the tie-break, now applied between siblings of the same build rather than between a build output and
+     * whatever else sits in the directory.</p>
+     *
+     * <h2>A named artifact that is missing is an error</h2>
+     * <p>It used to warn and deploy the biggest file instead. Someone who names an artifact has a reason to; a typo in
+     * that name then put an unintended jar online, and the warning scrolled past in a CI log nobody reads when the
+     * build is green. Failing costs a red build and a one-line fix.</p>
+     *
+     * @param outputDirectory the directory being scanned, for the error messages
+     * @param candidates      every deployable-looking file found there, in listing order
+     * @param buildOutputs    the files this build produced, possibly empty
+     * @param requested       the artifact named by the caller, possibly {@code null}
+     */
+    static File chooseArtifact(File outputDirectory, List<File> candidates, List<File> buildOutputs,
+                               String requested) throws MojoExecutionException {
+        if (isNotEmpty(requested)) {
+            for (File candidate : candidates) {
+                if (candidate.getName().equals(requested)) {
+                    return candidate;
+                }
+            }
+            File named = new File(outputDirectory, requested);
+            if (named.isFile()) {
+                return named;
+            }
+            throw new MojoExecutionException("Artifact [" + requested + "] not found in [" + outputDirectory
+                    + "]. Deploying another one would put code online that nobody asked for: fix the name, or drop it"
+                    + " to let the build decide.");
+        }
+
+        List<File> preferred = new ArrayList<File>();
+        for (File candidate : candidates) {
+            if (contains(buildOutputs, candidate)) {
+                preferred.add(candidate);
+            }
+        }
+        List<File> retained = preferred.isEmpty() ? candidates : preferred;
+
+        List<File> sorted = new ArrayList<File>(retained);
+        Collections.sort(sorted, new Comparator<File>() {
+            public int compare(File left, File right) {
+                return Long.valueOf(right.length()).compareTo(left.length());
+            }
+        });
+
+        return sorted.get(0);
+    }
+
+    /** Same file, whatever the path was spelled like — {@code target/x.jar} and an absolute path are one file. */
+    private static boolean contains(List<File> files, File wanted) {
+        for (File file : files) {
+            if (file.getAbsoluteFile().equals(wanted.getAbsoluteFile())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public CreateObject createObject(JelasticClient client, UpLoader upLoader, Authentication authentication)
